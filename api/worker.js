@@ -47,6 +47,16 @@ function json(data, status = 200) {
   });
 }
 
+async function parseBody(request) {
+  const ct = request.headers.get('Content-Type') || '';
+  if (ct.includes('application/json')) {
+    return request.json();
+  }
+  // sendBeacon sends as text/plain
+  const text = await request.text();
+  try { return JSON.parse(text); } catch (e) { return {}; }
+}
+
 // Simple in-memory token store (tokens last until worker restarts, ~30min)
 // In production you'd use KV, but for this scale D1 works
 const TOKEN_EXPIRY = 8 * 60 * 60 * 1000; // 8 hours
@@ -268,7 +278,7 @@ export default {
 
       // Contact form submission (from website)
       if (path === '/api/contact' && method === 'POST') {
-        const data = await request.json();
+        const data = await parseBody(request);
         const { name, email, phone, subject, message } = data;
 
         if (!name || !email || !message) {
@@ -299,7 +309,7 @@ export default {
 
       // Reservation form submission (from website)
       if (path === '/api/reserve' && method === 'POST') {
-        const data = await request.json();
+        const data = await parseBody(request);
         const { name, email, phone, kitten } = data;
 
         if (!name || !email) {
@@ -405,11 +415,11 @@ export default {
         return json({ success: true, message: 'Application submitted' });
       }
 
-      // Get my application
+      // Get my application (strip score data - admin only)
       if (path === '/api/application' && method === 'GET') {
         const session = await validateSession(env.DB, token);
         if (!session) return json({ error: 'Not authenticated' }, 401);
-        const app = await env.DB.prepare('SELECT * FROM applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').bind(session.user_id).first();
+        const app = await env.DB.prepare('SELECT id, user_id, kitten_preference, full_name, email, phone, city_state, housing_type, status, admin_notes, created_at, updated_at FROM applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').bind(session.user_id).first();
         return json({ application: app });
       }
 

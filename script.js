@@ -68,6 +68,50 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     });
+
+    // --- Track forms in portal API ---
+    var PORTAL_API = 'https://portal.blueskycattery.com/api';
+
+    // Contact form: send to API before FormSubmit handles it
+    var contactForm = document.getElementById('contactForm');
+    if (contactForm && contactForm.getAttribute('action')) {
+        contactForm.addEventListener('submit', function () {
+            var fd = new FormData(contactForm);
+            var data = {};
+            fd.forEach(function (v, k) { if (!k.startsWith('_')) data[k] = v; });
+            // Fire and forget - don't block the form submission
+            try {
+                navigator.sendBeacon(PORTAL_API + '/contact', JSON.stringify(data));
+            } catch (e) {
+                fetch(PORTAL_API + '/contact', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                    keepalive: true
+                }).catch(function () {});
+            }
+        });
+    }
+
+    // Reservation form: send to API before FormSubmit handles it
+    var resForm = document.getElementById('reservationForm');
+    if (resForm && resForm.getAttribute('action')) {
+        resForm.addEventListener('submit', function () {
+            var fd = new FormData(resForm);
+            var data = {};
+            fd.forEach(function (v, k) { if (!k.startsWith('_')) data[k] = v; });
+            try {
+                navigator.sendBeacon(PORTAL_API + '/reserve', JSON.stringify(data));
+            } catch (e) {
+                fetch(PORTAL_API + '/reserve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                    keepalive: true
+                }).catch(function () {});
+            }
+        });
+    }
 });
 
 
