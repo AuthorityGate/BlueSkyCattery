@@ -121,7 +121,11 @@
                 </div>
 
                 <div class="contact-form-wrapper">
-                    <form class="contact-form" id="contactForm" onsubmit="submitContact(event)">
+                    <form class="contact-form" id="contactForm" action="https://formsubmit.co/Deanna@blueskycattery.com" method="POST">
+                        <input type="hidden" name="_subject" value="Blue Sky Cattery - Contact Form">
+                        <input type="hidden" name="_captcha" value="false">
+                        <input type="hidden" name="_template" value="table">
+                        <input type="hidden" name="_next" value="https://blueskycattery.com/thanks.html">
                         <h3>Send Us a Message</h3>
                         <div class="form-group">
                             <label for="contactName">Your Name *</label>
@@ -235,6 +239,6 @@
         </div>
     </footer>
 
-    <script src="script.js?v=3"></script>
+    <script src="script.js?v=4"></script>
 </body>
 </html>

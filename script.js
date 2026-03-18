@@ -82,6 +82,12 @@ function openReservation(kittenNum) {
     var success = document.getElementById('formSuccess');
 
     kittenName.textContent = 'Kitten #' + kittenNum;
+    // Set hidden fields for the native form submission
+    var kittenField = document.getElementById('resKitten');
+    var subjectField = document.getElementById('resSubject');
+    if (kittenField) kittenField.value = 'Kitten #' + kittenNum;
+    if (subjectField) subjectField.value = 'Kitten Reservation Request - Kitten #' + kittenNum;
+
     form.style.display = 'block';
     success.style.display = 'none';
     modal.classList.add('modal-active');

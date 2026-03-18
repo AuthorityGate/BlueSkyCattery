@@ -476,7 +476,12 @@
                 <h2>Reserve Your Kitten</h2>
                 <p>Reserving <strong id="modalKittenName">Kitten #1</strong></p>
             </div>
-            <form id="reservationForm" onsubmit="submitReservation(event)">
+            <form id="reservationForm" action="https://formsubmit.co/Deanna@blueskycattery.com" method="POST">
+                <input type="hidden" name="_subject" id="resSubject" value="Kitten Reservation Request">
+                <input type="hidden" name="_captcha" value="false">
+                <input type="hidden" name="_template" value="table">
+                <input type="hidden" name="_next" value="https://blueskycattery.com/thanks.html">
+                <input type="hidden" name="Kitten" id="resKitten" value="">
                 <div class="form-group">
                     <label for="resName">Full Name *</label>
                     <input type="text" id="resName" name="name" required>
@@ -582,6 +587,6 @@
         </div>
     </footer>
 
-    <script src="script.js?v=3"></script>
+    <script src="script.js?v=4"></script>
 </body>
 </html>

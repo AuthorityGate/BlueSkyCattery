@@ -2016,6 +2016,41 @@ h1, h2, h3, h4 {
 }
 
 /* ========================================
+   THANKS PAGE
+   ======================================== */
+.thanks-page {
+    padding: 180px 0 100px;
+    text-align: center;
+    min-height: 60vh;
+    display: flex;
+    align-items: center;
+}
+
+.thanks-content {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.thanks-content h1 {
+    font-size: 2.4rem;
+    margin-bottom: 16px;
+}
+
+.thanks-content p {
+    color: var(--color-brown);
+    margin-bottom: 12px;
+    line-height: 1.8;
+    font-size: 1.05rem;
+}
+
+.thanks-buttons {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin-top: 32px;
+}
+
+/* ========================================
    FOOTER
    ======================================== */
 .footer {
