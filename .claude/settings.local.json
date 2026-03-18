@@ -31,7 +31,12 @@
       "Bash(where convert:*)",
       "Bash(where ffmpeg:*)",
       "Bash(pip install:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(for f:*)",
+      "Bash(do)",
+      "Bash(sed -i 's|^<div class=\"\"torn-paper-wrap\"\">||' \"$f\")",
+      "Bash(sed -i 's|^</div>$||' \"$f\")",
+      "Bash(done)"
     ]
   }
 }
