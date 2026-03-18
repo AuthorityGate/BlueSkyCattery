@@ -865,6 +865,42 @@ export default {
         return json({ candidates, litter_code: litter.litter_code });
       }
 
+      // Admin: Re-run AI analysis on an existing application
+      if (path.match(/^\/api\/admin\/applications\/\d+\/reanalyze$/) && method === 'POST') {
+        const session = await validateSession(env.DB, token);
+        if (!session || session.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+        const appId = path.split('/')[4];
+        const app = await env.DB.prepare('SELECT * FROM applications WHERE id = ?').bind(appId).first();
+        if (!app) return json({ error: 'Application not found' }, 404);
+
+        const grading = gradeApplication(app);
+        let aiResult = null;
+        if (env.AI) {
+          aiResult = await aiAnalyzeApplication(app, grading, env);
+        }
+
+        if (aiResult) {
+          grading.score = Math.max(0, Math.min(100, grading.score + aiResult.scoreAdjustment));
+          grading.highlights = grading.highlights.concat(aiResult.aiHighlights);
+          grading.risks = grading.risks.concat(aiResult.aiRisks);
+          if (aiResult.redFlags.length > 0) grading.risks = grading.risks.concat(aiResult.redFlags.map(f => 'AI FLAG: ' + f));
+          grading.categories.ai = {
+            score: aiResult.scoreAdjustment,
+            max: 15,
+            label: 'AI Analysis',
+            sincerity: aiResult.sincerity,
+            knowledge: aiResult.knowledge,
+            summary: aiResult.summary
+          };
+          grading.grade = grading.score >= 80 ? 'Excellent' : grading.score >= 65 ? 'Good' : grading.score >= 45 ? 'Fair' : 'Needs Review';
+        }
+
+        await env.DB.prepare('UPDATE applications SET score = ?, score_breakdown = ?, highlights = ?, risks = ?, updated_at = ? WHERE id = ?')
+          .bind(grading.score, JSON.stringify(grading.categories), JSON.stringify(grading.highlights), JSON.stringify(grading.risks), now(), appId).run();
+
+        return json({ success: true, score: grading.score, grade: grading.grade, aiResult: aiResult ? true : false });
+      }
+
       // Admin: Dashboard stats
       if (path === '/api/admin/stats' && method === 'GET') {
         const session = await validateSession(env.DB, token);
@@ -1447,7 +1483,7 @@ async function showAppModal(appId) {
   html += '<h3 style="margin:16px 0 8px">Admin Decision</h3>';
   html += '<div class="field"><label>Status</label><select id="appStatus"><option value="submitted"' + (app.status==='submitted'?' selected':'') + '>Submitted</option><option value="reviewed"' + (app.status==='reviewed'?' selected':'') + '>Reviewed</option><option value="approved"' + (app.status==='approved'?' selected':'') + '>Approved</option><option value="waitlist"' + (app.status==='waitlist'?' selected':'') + '>Waitlist</option><option value="rejected"' + (app.status==='rejected'?' selected':'') + '>Rejected</option></select></div>';
   html += '<div class="field"><label>Admin Notes</label><textarea id="appNotes" rows="3">' + (app.admin_notes || '') + '</textarea></div>';
-  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
+  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-outline" id="reanalyzeBtn" style="color:#87A5B4;border-color:#87A5B4">Re-analyze with AI</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
 
   modal.innerHTML = html;
   bg.appendChild(modal);
@@ -1459,6 +1495,22 @@ async function showAppModal(appId) {
     await api('/admin/applications/' + appId, { method: 'PUT', body: JSON.stringify({ status, admin_notes: notes }) });
     bg.remove();
     renderApp();
+  };
+
+  document.getElementById('reanalyzeBtn').onclick = async () => {
+    const btn = document.getElementById('reanalyzeBtn');
+    btn.disabled = true;
+    btn.textContent = 'Analyzing...';
+    const res = await api('/admin/applications/' + appId + '/reanalyze', { method: 'POST' });
+    if (res.success) {
+      alert('AI analysis complete. New score: ' + res.score + ' (' + res.grade + ')');
+      bg.remove();
+      showAppModal(appId);
+    } else {
+      alert('AI analysis failed: ' + (res.error || 'Unknown error'));
+      btn.disabled = false;
+      btn.textContent = 'Re-analyze with AI';
+    }
   };
 }
 
