@@ -1117,6 +1117,41 @@ export default {
       }
 
       // =====================
+      // ADMIN: SEND MESSAGE TO LEAD
+      if (path === '/api/admin/send-message' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const { lead_id, subject, body } = await request.json();
+        if (!lead_id || !subject || !body) return json({ error: 'lead_id, subject, and body required' }, 400);
+
+        const lead = await env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(lead_id).first();
+        if (!lead) return json({ error: 'Lead not found' }, 404);
+
+        // Send email via Brevo
+        const sent = await sendEmail(lead.email, subject, body, lead.name);
+
+        // Log the outbound message
+        await env.DB.prepare('INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)')
+          .bind(lead_id, 'outbound', subject, body, now()).run();
+
+        await writeAuditLog(env.DB, session.user_id, 'send_message', 'lead', lead_id, 'To: ' + lead.email + ' Subject: ' + subject);
+
+        return json({ success: true, sent });
+      }
+
+      // ADMIN: NOTIFICATIONS (new leads + pending apps count)
+      if (path === '/api/admin/notifications' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const newLeads = await env.DB.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'new'").first();
+        const pendingApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'submitted'").first();
+        return json({
+          newLeads: newLeads.count,
+          pendingApps: pendingApps.count,
+          total: newLeads.count + pendingApps.count
+        });
+      }
+
       // ADMIN: AUDIT LOG
       // =====================
 
@@ -1273,6 +1308,7 @@ tr:hover{background:rgba(212,197,169,.3)}
 .toggle .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
 .toggle input:checked+.slider{background:#7A8B6F}
 .toggle input:checked+.slider:before{transform:translateX(20px)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
 @media(max-width:768px){.stats-grid{grid-template-columns:1fr 1fr}table{font-size:.8rem}th,td{padding:8px 10px}.form-grid{grid-template-columns:1fr}nav.tabs button{padding:8px 10px;font-size:.75rem}}
 </style>
 </head>
@@ -1370,13 +1406,23 @@ async function renderApp() {
   const app = document.getElementById('app');
   app.innerHTML = '';
 
+  // Fetch notification count
+  const notif = await api('/admin/notifications').catch(() => ({ total: 0 }));
+  const badgeCount = notif.total || 0;
+
   const header = el('header', {},
     el('div', { class: 'container top-bar' },
-      el('div', {},
-        el('h1', {}, 'Blue Sky Cattery Admin'),
-        el('div', { class: 'subtitle' }, me.user.email)
+      el('div', { style: 'display:flex;align-items:center;gap:12px' },
+        el('div', {},
+          el('h1', {}, 'Blue Sky Cattery Admin'),
+          el('div', { class: 'subtitle' }, me.user.email)
+        ),
+        badgeCount > 0 ? el('div', { style: 'background:#A0522D;color:#fff;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;cursor:pointer;animation:pulse 2s infinite', onclick: () => { currentTab = 'leads'; renderApp(); }, html: badgeCount + ' new' }) : null
       ),
-      el('button', { class: 'btn btn-outline', style: 'color:#fff;border-color:rgba(255,255,255,.3)', onclick: async () => { await api('/auth/logout', { method:'POST' }); authToken = null; localStorage.removeItem('bsc_admin_token'); renderLogin(); }}, 'Logout')
+      el('div', { style: 'display:flex;gap:8px;align-items:center' },
+        el('a', { href: 'https://blueskycattery.com', style: 'color:#C8B88A;font-size:.8rem;text-decoration:none', html: 'View Site &rarr;' }),
+        el('button', { class: 'btn btn-outline', style: 'color:#fff;border-color:rgba(255,255,255,.3)', onclick: async () => { await api('/auth/logout', { method:'POST' }); authToken = null; localStorage.removeItem('bsc_admin_token'); renderLogin(); }}, 'Logout')
+      )
     )
   );
   app.appendChild(header);
@@ -1591,19 +1637,58 @@ async function showLeadModal(leadId) {
   const { lead, messages } = await api('/admin/leads/' + leadId);
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
   const modal = el('div', { class: 'modal' });
-  modal.innerHTML = '<h2>' + esc(lead.name) + '</h2>' +
-    '<div class="field"><label>Email</label><div class="value">' + esc(lead.email) + '</div></div>' +
-    '<div class="field"><label>Phone</label><div class="value">' + esc(lead.phone || 'N/A') + '</div></div>' +
-    '<div class="field"><label>Source</label><div class="value">' + esc(lead.source) + '</div></div>' +
-    '<div class="field"><label>Status</label><div class="value">' + badge(lead.status) + '</div></div>' +
-    '<div class="field"><label>Created</label><div class="value">' + esc(lead.created_at) + '</div></div>' +
-    '<h3 style="margin:20px 0 8px">Messages</h3>';
+
+  let html = '<h2>' + esc(lead.name) + '</h2>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+  html += '<div class="field"><label>Email</label><div class="value">' + esc(lead.email) + '</div></div>';
+  html += '<div class="field"><label>Phone</label><div class="value">' + esc(lead.phone || 'N/A') + '</div></div>';
+  html += '<div class="field"><label>Source</label><div class="value">' + esc(lead.source) + '</div></div>';
+  html += '<div class="field"><label>Status</label><div class="value">' + badge(lead.status) + '</div></div>';
+  html += '</div>';
+  html += '<div class="field"><label>Created</label><div class="value">' + esc(lead.created_at) + '</div></div>';
+
+  // Message history
+  html += '<h3 style="margin:20px 0 8px">Conversation</h3>';
   (messages || []).forEach(msg => {
-    modal.innerHTML += '<div style="background:#F5EDE0;padding:12px;border-radius:8px;margin-bottom:8px;font-size:.88rem"><div style="font-size:.75rem;color:#6B5B4B;margin-bottom:4px">' + esc(msg.created_at) + ' - ' + esc(msg.subject) + '</div><pre style="white-space:pre-wrap;font-family:inherit">' + esc(msg.body) + '</pre></div>';
+    const isOutbound = msg.direction === 'outbound';
+    const bgColor = isOutbound ? 'rgba(122,139,111,.08)' : '#F5EDE0';
+    const borderColor = isOutbound ? 'rgba(122,139,111,.2)' : 'transparent';
+    const dirLabel = isOutbound ? '<span style="color:#7A8B6F;font-weight:700">SENT</span>' : '<span style="color:#87A5B4;font-weight:700">RECEIVED</span>';
+    html += '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';padding:12px;border-radius:8px;margin-bottom:8px;font-size:.88rem">';
+    html += '<div style="font-size:.75rem;color:#6B5B4B;margin-bottom:4px;display:flex;justify-content:space-between">' + dirLabel + ' <span>' + esc(msg.created_at) + '</span></div>';
+    html += '<div style="font-size:.8rem;font-weight:600;margin-bottom:4px">' + esc(msg.subject || '') + '</div>';
+    html += '<pre style="white-space:pre-wrap;font-family:inherit;margin:0">' + esc(msg.body || '') + '</pre></div>';
   });
-  modal.innerHTML += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Close</button></div>';
+
+  // Send message form
+  html += '<h3 style="margin:20px 0 8px">Send Message</h3>';
+  html += '<div class="field"><label>Subject</label><input type="text" id="msgSubject" value="Blue Sky Cattery" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+  html += '<div class="field"><label>Message</label><textarea id="msgBody" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px" placeholder="Type your message to ' + esc(lead.name) + '..."></textarea></div>';
+
+  html += '<div class="actions">';
+  html += '<button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Close</button>';
+  html += '<button class="btn btn-primary" id="sendMsgBtn">Send Email</button>';
+  html += '</div>';
+
+  modal.innerHTML = html;
   bg.appendChild(modal);
   document.body.appendChild(bg);
+
+  document.getElementById('sendMsgBtn').onclick = async () => {
+    const subject = document.getElementById('msgSubject').value;
+    const body = document.getElementById('msgBody').value;
+    if (!body.trim()) { alert('Please enter a message'); return; }
+    const btn = document.getElementById('sendMsgBtn');
+    btn.disabled = true; btn.textContent = 'Sending...';
+    const res = await api('/admin/send-message', { method: 'POST', body: JSON.stringify({ lead_id: leadId, subject, body }) });
+    if (res.success) {
+      bg.remove();
+      showLeadModal(leadId); // Refresh to show sent message
+    } else {
+      alert('Failed: ' + (res.error || 'Unknown error'));
+      btn.disabled = false; btn.textContent = 'Send Email';
+    }
+  };
 }
 
 function showApprovalModal(name, email, password) {

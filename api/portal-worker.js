@@ -696,6 +696,11 @@ export default {
         return json({ cats: cats.results });
       }
 
+      // Redirect old admin URL to new admin domain
+      if (path === '/admin' || path === '/admin/') {
+        return new Response(null, { status: 301, headers: { 'Location': 'https://admin.blueskycattery.com/' } });
+      }
+
       // Brevo inbound email webhook
       if (path === '/api/webhook/inbound-email' && method === 'POST') {
         const payload = await parseBody(request);
