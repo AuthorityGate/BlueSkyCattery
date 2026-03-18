@@ -100,27 +100,38 @@ function submitReservation(e) {
     var success = document.getElementById('formSuccess');
     var submitBtn = form.querySelector('button[type="submit"]');
 
-    // Build JSON data with kitten info
     var formData = new FormData(form);
-    var data = { _subject: 'Kitten Reservation Request - Kitten #' + selectedKitten, Kitten: 'Kitten #' + selectedKitten };
-    formData.forEach(function (value, key) { data[key] = value; });
+    formData.append('_subject', 'Kitten Reservation Request - Kitten #' + selectedKitten);
+    formData.append('Kitten', 'Kitten #' + selectedKitten);
+    formData.append('_captcha', 'false');
+    formData.append('_template', 'table');
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending...';
 
     fetch('https://formsubmit.co/ajax/Deanna@blueskycattery.com', {
         method: 'POST',
-        body: JSON.stringify(data),
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+        body: formData
     }).then(function (response) {
-        return response.json();
-    }).then(function (result) {
-        if (result.success === 'true' || result.success === true) {
-            form.style.display = 'none';
-            success.style.display = 'block';
-            form.reset();
-        } else {
-            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+        return response.text();
+    }).then(function (text) {
+        try {
+            var result = JSON.parse(text);
+            if (result.success === 'true' || result.success === true) {
+                form.style.display = 'none';
+                success.style.display = 'block';
+                form.reset();
+            } else {
+                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            }
+        } catch (e) {
+            if (text.indexOf('success') !== -1 || text.indexOf('Thank') !== -1) {
+                form.style.display = 'none';
+                success.style.display = 'block';
+                form.reset();
+            } else {
+                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            }
         }
     }).catch(function (err) {
         console.error('Form error:', err);
@@ -154,25 +165,36 @@ function submitContact(e) {
     var submitBtn = form.querySelector('button[type="submit"]');
 
     var formData = new FormData(form);
-    var data = { _subject: 'Blue Sky Cattery - ' + (formData.get('subject') || 'Contact Form') };
-    formData.forEach(function (value, key) { data[key] = value; });
+    formData.append('_subject', 'Blue Sky Cattery - ' + (formData.get('subject') || 'Contact Form'));
+    formData.append('_captcha', 'false');
+    formData.append('_template', 'table');
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending...';
 
     fetch('https://formsubmit.co/ajax/Deanna@blueskycattery.com', {
         method: 'POST',
-        body: JSON.stringify(data),
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+        body: formData
     }).then(function (response) {
-        return response.json();
-    }).then(function (result) {
-        if (result.success === 'true' || result.success === true) {
-            form.style.display = 'none';
-            success.style.display = 'block';
-            form.reset();
-        } else {
-            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+        return response.text();
+    }).then(function (text) {
+        try {
+            var result = JSON.parse(text);
+            if (result.success === 'true' || result.success === true) {
+                form.style.display = 'none';
+                success.style.display = 'block';
+                form.reset();
+            } else {
+                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            }
+        } catch (e) {
+            if (text.indexOf('success') !== -1 || text.indexOf('Thank') !== -1) {
+                form.style.display = 'none';
+                success.style.display = 'block';
+                form.reset();
+            } else {
+                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            }
         }
     }).catch(function (err) {
         console.error('Form error:', err);
