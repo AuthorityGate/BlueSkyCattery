@@ -673,6 +673,12 @@ export default {
         return json({ litter: { ...litter, kittens: kittens.results } });
       }
 
+      // Public: application questions (for dynamic form rendering)
+      if (path === '/api/questions' && method === 'GET') {
+        const questions = await env.DB.prepare("SELECT section, label, field_name, field_type, options, required, hint, sort_order FROM app_questions WHERE active = 1 ORDER BY sort_order ASC").all();
+        return json({ questions: questions.results });
+      }
+
       // Public config (website-safe settings only)
       if (path === '/api/config' && method === 'GET') {
         const safeKeys = ['cattery_name','cattery_tagline','cattery_location','cattery_email','cattery_registration','deposit_amount','kitten_base_price','go_home_weeks','current_litter'];
@@ -876,6 +882,34 @@ export default {
         return json({ success: true, message: 'Application submitted' });
       }
 
+      // Save application draft
+      if (path === '/api/application/draft' && method === 'POST') {
+        const session = await validateSession(env.DB, token);
+        if (!session) return json({ error: 'Not authenticated' }, 401);
+        const data = await request.json();
+        // Save draft to user record
+        const existing = await env.DB.prepare('SELECT id FROM applications WHERE user_id = ? AND status = ?').bind(session.user_id, 'draft').first();
+        if (existing) {
+          await env.DB.prepare('UPDATE applications SET draft_data = ?, updated_at = ? WHERE id = ?')
+            .bind(JSON.stringify(data), now(), existing.id).run();
+        } else {
+          await env.DB.prepare('INSERT INTO applications (user_id, draft_data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+            .bind(session.user_id, JSON.stringify(data), 'draft', now(), now()).run();
+        }
+        return json({ success: true, message: 'Draft saved' });
+      }
+
+      // Get draft
+      if (path === '/api/application/draft' && method === 'GET') {
+        const session = await validateSession(env.DB, token);
+        if (!session) return json({ error: 'Not authenticated' }, 401);
+        const draft = await env.DB.prepare('SELECT draft_data FROM applications WHERE user_id = ? AND status = ? ORDER BY updated_at DESC LIMIT 1').bind(session.user_id, 'draft').first();
+        if (draft && draft.draft_data) {
+          return json({ draft: JSON.parse(draft.draft_data) });
+        }
+        return json({ draft: null });
+      }
+
       // Get my application (strip score data - admin only)
       if (path === '/api/application' && method === 'GET') {
         const session = await validateSession(env.DB, token);
@@ -903,7 +937,7 @@ export default {
 };
 
 // ============================================
-// APPLICANT PORTAL HTML
+// APPLICANT PORTAL HTML (Dynamic Multi-Step)
 // ============================================
 const PORTAL_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -1011,7 +1045,7 @@ async function renderPortal() {
       <p style="font-size:.85rem;color:#6B5B4B">Submitted: \${existing.created_at}</p>
     </div></div>\`;
   } else {
-    content = renderApplicationForm();
+    content = await renderApplicationForm();
   }
 
   document.getElementById('app').innerHTML = \`
@@ -1021,131 +1055,196 @@ async function renderPortal() {
   </div></header>
   <div class="container">\${content}</div>\`;
 
-  if (!existing) {
-    document.getElementById('appForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const form = e.target;
-      const data = {};
-      new FormData(form).forEach((v, k) => data[k] = v);
-      const res = await api('/application', { method: 'POST', body: JSON.stringify(data) });
-      if (res.success) renderPortal();
-      else alert(res.error || 'Failed to submit');
-    };
+  // If showing the wizard, render the first step
+  if (!existing && document.getElementById('appContainer')) {
+    renderWizard();
   }
 }
 
-function renderApplicationForm() {
-  return \`<div class="card">
-    <h2>Adoption Application</h2>
-    <p>Thank you for your interest in a Blue Sky Cattery kitten! Please complete this application thoroughly and honestly. All information helps us ensure the best match between our kittens and their forever families. Incomplete or inconsistent applications may not be considered.</p>
-    <form id="appForm">
-      <div class="form-section">Personal Information</div>
-      <div class="form-row">
-        <div class="form-group"><label>Full Legal Name *</label><input type="text" name="full_name" required></div>
-        <div class="form-group"><label>Email Address *</label><input type="email" name="email" required></div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label>Phone Number *</label><input type="tel" name="phone" required></div>
-        <div class="form-group"><label>City / State *</label><input type="text" name="city_state" required></div>
-      </div>
-      <div class="form-group"><label>Full Home Address *</label><input type="text" name="home_address" required placeholder="Street, City, State, ZIP">
-        <div class="hint">Used for verification and to ensure we can deliver your kitten safely.</div></div>
+// Conditional logic: which fields show based on other answers
+const CONDITIONS = {
+  partner_name: { field: 'has_partner', value: 'Yes' },
+  partner_email: { field: 'has_partner', value: 'Yes' },
+  partner_phone: { field: 'has_partner', value: 'Yes' },
+  landlord_info: { field: 'housing_own_rent', value: 'Rent' },
+  surrender_details: { field: 'surrender_history', value: 'Yes' }
+};
 
-      <div class="form-section">Relationship & Household Decision-Makers</div>
-      <div class="form-row">
-        <div class="form-group"><label>Marital / Relationship Status *</label>
-          <select name="marital_status" required><option value="">Select...</option><option value="single">Single</option><option value="married">Married</option><option value="partner">Long-term Partner / Living Together</option><option value="divorced">Divorced / Separated</option><option value="other">Other</option></select></div>
-        <div class="form-group"><label>Does a spouse or partner live in the household? *</label>
-          <select name="has_partner" id="hasPartner" onchange="document.getElementById('partnerFields').style.display=this.value==='yes'?'block':'none'"><option value="">Select...</option><option value="yes">Yes</option><option value="no">No</option></select></div>
-      </div>
-      <div id="partnerFields" style="display:none">
-        <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:12px">Since your partner is a household decision-maker, we need their information as well. Both parties must agree to the adoption terms.</p>
-        <div class="form-row">
-          <div class="form-group"><label>Partner's Full Name</label><input type="text" name="partner_name"></div>
-          <div class="form-group"><label>Partner's Email</label><input type="email" name="partner_email">
-            <div class="hint">We may send them a confirmation of the adoption agreement.</div></div>
-        </div>
-        <div class="form-group"><label>Partner's Phone Number</label><input type="tel" name="partner_phone"></div>
-      </div>
+let formData = {};
+let allQuestions = [];
+let sections = [];
+let currentStep = 0;
 
-      <div class="form-section">Your Home Environment</div>
-      <div class="form-row">
-        <div class="form-group"><label>What type of home do you live in? *</label>
-          <select name="housing_type" required><option value="">Select...</option><option value="house">House</option><option value="apartment">Apartment/Condo</option><option value="townhouse">Townhouse</option><option value="other">Other</option></select>
-        </div>
-        <div class="form-group"><label>Do you own or rent? *</label>
-          <select name="housing_own_rent" required><option value="">Select...</option><option value="own">Own</option><option value="rent">Rent</option></select>
-        </div>
-      </div>
-      <div class="form-group"><label>If renting, does your lease allow cats? Please provide your landlord's name and contact for verification.</label><textarea name="landlord_info" rows="2"></textarea></div>
-      <div class="form-group"><label>Who lives in your household? Please list all members and their ages (include children) *</label><textarea name="household_members" rows="2" required></textarea></div>
-      <div class="form-group"><label>Describe your typical daily schedule. How many hours per day is someone home? *</label><textarea name="work_schedule" rows="2" required></textarea>
-        <div class="hint">Orientals require significant human interaction and do not do well alone for long periods.</div></div>
-      <div class="form-group"><label>Does anyone in the household have allergies to cats? Have allergies ever been a reason for rehoming a pet?</label><textarea name="allergies" rows="2"></textarea></div>
+async function loadQuestions() {
+  const res = await api('/questions');
+  allQuestions = res.questions || [];
+  // Group by section
+  const sectionMap = {};
+  allQuestions.forEach(q => {
+    if (!sectionMap[q.section]) sectionMap[q.section] = [];
+    sectionMap[q.section].push(q);
+  });
+  sections = Object.keys(sectionMap).map(name => ({ name, questions: sectionMap[name] }));
+}
 
-      <div class="form-section">Current & Past Pets</div>
-      <div class="form-group"><label>List ALL pets you currently own (type, breed, age, spayed/neutered status) *</label><textarea name="other_pets" rows="3" required></textarea>
-        <div class="hint">Oriental Shorthairs require a feline companion at their energy level. If you don't have one, describe your plan.</div></div>
-      <div class="form-group"><label>Where did you acquire your current pets? (breeder, shelter, rescue, etc.)</label><textarea name="pet_source" rows="2"></textarea></div>
-      <div class="form-group"><label>Please describe your complete pet ownership history over the past 10 years. Include what happened to each animal. *</label><textarea name="pet_history" rows="4" required></textarea>
-        <div class="hint">We want to understand the full picture. Please be thorough.</div></div>
-      <div class="form-group"><label>Have you ever had to rehome, surrender, return to a breeder, or give away a pet for any reason? *</label>
-        <select name="surrender_history" required><option value="">Select...</option><option value="no">No, never</option><option value="yes">Yes</option></select></div>
-      <div class="form-group"><label>If yes, please explain the full circumstances.</label><textarea name="surrender_details" rows="3"></textarea></div>
-      <div class="form-group"><label>Have any of your pets ever been injured, become ill, or passed away unexpectedly? Please describe.</label><textarea name="pet_health_history" rows="2"></textarea></div>
+async function loadDraft() {
+  const res = await api('/application/draft');
+  if (res.draft) formData = res.draft;
+}
 
-      <div class="form-section">Knowledge & Expectations</div>
-      <div class="form-group"><label>What do you know about the Oriental Shorthair breed? What attracted you to them specifically? *</label><textarea name="why_oriental" rows="4" required></textarea></div>
-      <div class="form-group"><label>Describe your previous experience with cats, especially purebred, Oriental, or Siamese breeds. *</label><textarea name="cat_experience" rows="3" required></textarea></div>
-      <div class="form-group"><label>Oriental Shorthairs are extremely vocal and demand constant attention. How do you feel about a cat that honks, chirps, and follows you everywhere? *</label><textarea name="vocal_comfort" rows="2" required></textarea></div>
-      <div class="form-group"><label>What would you do if the kitten didn't bond with you immediately or showed behavioral issues in the first few weeks? *</label><textarea name="adjustment_plan" rows="3" required></textarea></div>
-      <div class="form-group"><label>Under what circumstances, if any, would you consider rehoming this cat?</label><textarea name="rehome_circumstances" rows="2"></textarea></div>
-      <div class="form-group"><label>Where will the cat be kept? *</label>
-        <select name="indoor_only" required><option value="">Select...</option><option value="yes">Strictly indoors</option><option value="enclosed">Indoors with enclosed outdoor access (catio)</option><option value="no">Will have outdoor access</option></select>
-      </div>
-      <div class="form-group"><label>How will you provide enrichment and exercise for an Oriental Shorthair? (cat trees, toys, playtime, etc.) *</label><textarea name="enrichment_plan" rows="2" required></textarea></div>
+async function saveDraft() {
+  collectCurrentStepData();
+  await api('/application/draft', { method: 'POST', body: JSON.stringify(formData) });
+}
 
-      <div class="form-section">Veterinary Care</div>
-      <div class="form-group"><label>What is your current veterinarian's name and clinic? *</label><input type="text" name="vet_name" required>
-        <div class="hint">We may contact your vet as a reference.</div></div>
-      <div class="form-group"><label>Veterinarian phone number *</label><input type="tel" name="vet_phone" required></div>
-      <div class="form-group"><label>How do you feel about the spay/neuter requirement in our contract? *</label><textarea name="spay_neuter_opinion" rows="2" required></textarea></div>
-      <div class="form-group"><label>Are you prepared for the financial responsibility of cat ownership? (annual vet visits, emergencies, quality food, etc.) Approximate annual budget you'd allocate?</label><textarea name="financial_readiness" rows="2"></textarea></div>
+function collectCurrentStepData() {
+  const form = document.getElementById('wizardForm');
+  if (!form) return;
+  new FormData(form).forEach((v, k) => { if (v) formData[k] = v; });
+}
 
-      <div class="form-section">Verification Questions</div>
-      <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:12px">These questions help us verify the consistency of your application.</p>
-      <div class="form-group"><label>Earlier you described your pets. How many total cats do you currently have in your home? *</label><input type="text" name="verify_cat_count" required></div>
-      <div class="form-group"><label>You mentioned your housing situation. If we visited your home, what would we see in terms of space for a cat? *</label><textarea name="verify_home_description" rows="2" required></textarea></div>
-      <div class="form-group"><label>How did you first learn about Blue Sky Cattery? *</label><textarea name="how_found_us" rows="2" required></textarea></div>
+function shouldShow(q) {
+  const cond = CONDITIONS[q.field_name];
+  if (!cond) return true;
+  return formData[cond.field] === cond.value;
+}
 
-      <div class="form-section">Purpose & Preferences</div>
-      <div class="form-group"><label>What is the purpose of this adoption? *</label>
-        <select name="purpose" required><option value="">Select...</option><option value="pet">Pet (companion animal)</option><option value="show">Show Cat</option><option value="breeding">Breeding Rights</option></select>
-        <div class="hint">Breeding rights are available to selected candidates only and carry additional fees.</div></div>
-      <div class="form-group"><label>Do you have a sex preference?</label>
-        <select name="sex_preference"><option value="">No preference</option><option value="male">Male</option><option value="female">Female</option></select></div>
-      <div class="form-group"><label>Primary Kitten Choice</label>
-        <select name="kitten_primary"><option value="">No preference</option><option value="Kitten #1">Kitten #1</option><option value="Kitten #2">Kitten #2</option><option value="Kitten #3">Kitten #3</option><option value="Kitten #4">Kitten #4</option><option value="Kitten #5">Kitten #5</option><option value="Kitten #6">Kitten #6</option></select></div>
-      <div class="form-group"><label>Backup Choice #1</label>
-        <select name="kitten_backup1"><option value="">No backup preference</option><option value="Kitten #1">Kitten #1</option><option value="Kitten #2">Kitten #2</option><option value="Kitten #3">Kitten #3</option><option value="Kitten #4">Kitten #4</option><option value="Kitten #5">Kitten #5</option><option value="Kitten #6">Kitten #6</option></select></div>
-      <div class="form-group"><label>Backup Choice #2</label>
-        <select name="kitten_backup2"><option value="">No backup preference</option><option value="Kitten #1">Kitten #1</option><option value="Kitten #2">Kitten #2</option><option value="Kitten #3">Kitten #3</option><option value="Kitten #4">Kitten #4</option><option value="Kitten #5">Kitten #5</option><option value="Kitten #6">Kitten #6</option></select></div>
-      <div class="form-group"><label>When are you hoping to bring a kitten home?</label><input type="text" name="timeline"></div>
-      <div class="form-group"><label>Is there anything else you'd like us to know about you or your home?</label><textarea name="additional_notes" rows="3"></textarea></div>
+function renderWizard() {
+  const section = sections[currentStep];
+  const totalSteps = sections.length;
+  const pct = Math.round(((currentStep) / totalSteps) * 100);
 
-      <div style="background:#F5EDE0;padding:16px;border-radius:8px;margin:20px 0;font-size:.85rem;color:#6B5B4B">
-        <strong>By submitting this application, you confirm that:</strong>
-        <ul style="margin:8px 0 0 16px">
-          <li>All information provided is truthful and accurate</li>
-          <li>You understand that false information is grounds for denial</li>
-          <li>You consent to Blue Sky Cattery contacting your veterinarian</li>
-          <li>You understand that submitting an application does not guarantee a kitten</li>
-        </ul>
-      </div>
+  // Count answered questions
+  const totalQ = allQuestions.filter(q => q.required && shouldShow(q)).length;
+  const answeredQ = allQuestions.filter(q => q.required && shouldShow(q) && formData[q.field_name]).length;
+  const completePct = totalQ > 0 ? Math.round((answeredQ / totalQ) * 100) : 0;
 
-      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:16px;padding:14px">Submit Application</button>
-    </form>
-  </div>\`;
+  let html = '<div class="card">';
+  html += '<h2>Adoption Application</h2>';
+
+  // Progress bar
+  html += '<div style="margin-bottom:24px">';
+  html += '<div style="display:flex;justify-content:space-between;font-size:.82rem;color:#6B5B4B;margin-bottom:6px"><span>Step ' + (currentStep + 1) + ' of ' + totalSteps + ': ' + section.name + '</span><span>' + completePct + '% complete</span></div>';
+  html += '<div style="background:#e8e2d8;border-radius:6px;height:10px;overflow:hidden"><div style="background:linear-gradient(90deg,#7A8B6F,#A0522D);height:10px;border-radius:6px;width:' + pct + '%;transition:width .4s ease"></div></div>';
+
+  // Step indicators
+  html += '<div style="display:flex;gap:4px;margin-top:8px">';
+  sections.forEach((s, i) => {
+    const color = i < currentStep ? '#7A8B6F' : i === currentStep ? '#A0522D' : '#D4C5A9';
+    html += '<div style="flex:1;height:4px;border-radius:2px;background:' + color + '"></div>';
+  });
+  html += '</div></div>';
+
+  // Form fields for this section
+  html += '<form id="wizardForm">';
+  const visibleQuestions = section.questions.filter(q => shouldShow(q));
+
+  visibleQuestions.forEach(q => {
+    const val = formData[q.field_name] || '';
+    const req = q.required ? ' *' : '';
+
+    html += '<div class="form-group">';
+    html += '<label>' + q.label + req + '</label>';
+
+    if (q.field_type === 'select' && q.options) {
+      const opts = q.options.split('|');
+      html += '<select name="' + q.field_name + '"' + (q.required ? ' required' : '') + '>';
+      html += '<option value="">Select...</option>';
+      opts.forEach(o => {
+        html += '<option value="' + o + '"' + (val === o ? ' selected' : '') + '>' + o + '</option>';
+      });
+      html += '</select>';
+    } else if (q.field_type === 'textarea') {
+      html += '<textarea name="' + q.field_name + '" rows="3"' + (q.required ? ' required' : '') + '>' + val + '</textarea>';
+    } else {
+      html += '<input type="' + (q.field_type || 'text') + '" name="' + q.field_name + '" value="' + val + '"' + (q.required ? ' required' : '') + '>';
+    }
+
+    if (q.hint) html += '<div class="hint">' + q.hint + '</div>';
+    html += '</div>';
+  });
+  html += '</form>';
+
+  // Navigation buttons
+  html += '<div style="display:flex;gap:12px;margin-top:20px">';
+  if (currentStep > 0) {
+    html += '<button class="btn btn-outline" onclick="prevStep()" style="flex:1">Back</button>';
+  }
+  html += '<button class="btn btn-outline" onclick="saveDraftBtn()" style="flex:0 0 auto;color:#87A5B4;border-color:#87A5B4">Save Progress</button>';
+  if (currentStep < totalSteps - 1) {
+    html += '<button class="btn btn-primary" onclick="nextStep()" style="flex:1">Continue</button>';
+  } else {
+    html += '<button class="btn btn-primary" onclick="submitApp()" style="flex:1">Submit Application</button>';
+  }
+  html += '</div>';
+
+  // Consent text on last step
+  if (currentStep === totalSteps - 1) {
+    html += '<div style="background:#F5EDE0;padding:16px;border-radius:8px;margin:20px 0 0;font-size:.85rem;color:#6B5B4B"><strong>By submitting, you confirm:</strong><ul style="margin:8px 0 0 16px"><li>All information is truthful and accurate</li><li>False information is grounds for denial</li><li>You consent to us contacting your veterinarian</li><li>Submitting does not guarantee a kitten</li></ul></div>';
+  }
+
+  html += '</div>';
+  document.getElementById('appContainer').innerHTML = html;
+
+  // Add change listeners for conditional fields
+  const form = document.getElementById('wizardForm');
+  if (form) {
+    form.querySelectorAll('select, input').forEach(el => {
+      el.addEventListener('change', () => {
+        collectCurrentStepData();
+        // Re-render if this field controls visibility
+        const affectsOthers = Object.values(CONDITIONS).some(c => c.field === el.name);
+        if (affectsOthers) renderWizard();
+      });
+    });
+  }
+}
+
+function nextStep() {
+  const form = document.getElementById('wizardForm');
+  if (form && !form.reportValidity()) return;
+  collectCurrentStepData();
+  currentStep++;
+  renderWizard();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function prevStep() {
+  collectCurrentStepData();
+  currentStep--;
+  renderWizard();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function saveDraftBtn() {
+  collectCurrentStepData();
+  const btn = event.target;
+  btn.textContent = 'Saving...';
+  btn.disabled = true;
+  await api('/application/draft', { method: 'POST', body: JSON.stringify(formData) });
+  btn.textContent = 'Saved!';
+  setTimeout(() => { btn.textContent = 'Save Progress'; btn.disabled = false; }, 2000);
+}
+
+async function submitApp() {
+  const form = document.getElementById('wizardForm');
+  if (form && !form.reportValidity()) return;
+  collectCurrentStepData();
+
+  if (!confirm('Are you ready to submit your application? You will not be able to edit it after submission.')) return;
+
+  const res = await api('/application', { method: 'POST', body: JSON.stringify(formData) });
+  if (res.success) {
+    renderPortal();
+  } else {
+    alert(res.error || 'Failed to submit. Please try again.');
+  }
+}
+
+async function renderApplicationForm() {
+  await loadQuestions();
+  await loadDraft();
+  return '<div id="appContainer"></div>';
 }
 
 function logout() {
