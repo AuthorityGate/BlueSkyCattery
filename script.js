@@ -113,16 +113,17 @@ function submitReservation(e) {
         body: JSON.stringify(data),
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
     }).then(function (response) {
-        return response.json().then(function (result) { return { ok: result.success === 'true', result: result }; });
-    }).then(function (response) {
-        if (response.ok) {
+        return response.json();
+    }).then(function (result) {
+        if (result.success === 'true' || result.success === true) {
             form.style.display = 'none';
             success.style.display = 'block';
             form.reset();
         } else {
             alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
         }
-    }).catch(function () {
+    }).catch(function (err) {
+        console.error('Form error:', err);
         alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
     }).finally(function () {
         submitBtn.disabled = false;
@@ -164,16 +165,17 @@ function submitContact(e) {
         body: JSON.stringify(data),
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
     }).then(function (response) {
-        return response.json().then(function (result) { return { ok: result.success === 'true', result: result }; });
-    }).then(function (response) {
-        if (response.ok) {
+        return response.json();
+    }).then(function (result) {
+        if (result.success === 'true' || result.success === true) {
             form.style.display = 'none';
             success.style.display = 'block';
             form.reset();
         } else {
             alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
         }
-    }).catch(function () {
+    }).catch(function (err) {
+        console.error('Form error:', err);
         alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
     }).finally(function () {
         submitBtn.disabled = false;
