@@ -665,6 +665,25 @@ export default {
         return json({ litter_code: litter.litter_code, kittens: kittens.results });
       }
 
+      // Public litter info for website
+      if (path === '/api/litter' && method === 'GET') {
+        const litter = await env.DB.prepare("SELECT * FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
+        if (!litter) return json({ litter: null });
+        const kittens = await env.DB.prepare('SELECT number, name, color, sex, status, photo_url FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
+        return json({ litter: { ...litter, kittens: kittens.results } });
+      }
+
+      // Public config (website-safe settings only)
+      if (path === '/api/config' && method === 'GET') {
+        const safeKeys = ['cattery_name','cattery_tagline','cattery_location','cattery_email','cattery_registration','deposit_amount','kitten_base_price','go_home_weeks','current_litter'];
+        const config = {};
+        for (const key of safeKeys) {
+          const row = await env.DB.prepare('SELECT value FROM config WHERE key = ?').bind(key).first();
+          if (row) config[key] = row.value;
+        }
+        return json({ config });
+      }
+
       // Public cat profiles
       if (path === '/api/cats' && method === 'GET') {
         const cats = await env.DB.prepare("SELECT * FROM cats WHERE status = 'active' ORDER BY sort_order").all();

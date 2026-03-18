@@ -69,10 +69,73 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    // --- API Base ---
+    var API = 'https://portal.blueskycattery.com/api';
+
+    // --- Dynamic Kings & Queens from API ---
+    var royalsGrid = document.querySelector('.royals-grid');
+    if (royalsGrid) {
+        fetch(API + '/cats')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.cats || !data.cats.length) return;
+                royalsGrid.innerHTML = '';
+                data.cats.forEach(function (cat) {
+                    var badgeClass = cat.role === 'king' ? 'king-badge' : 'queen-badge';
+                    var badgeText = cat.role === 'king' ? 'King' : 'Queen';
+                    var details = [cat.registration || 'CFA Registered'];
+                    if (cat.health_tested) details.push('Health Tested');
+                    if (cat.color) details.push(cat.color);
+
+                    var card = document.createElement('div');
+                    card.className = 'royal-card animate-target animate-in';
+                    card.innerHTML =
+                        '<div class="royal-badge ' + badgeClass + '">' + badgeText + '</div>' +
+                        '<div class="royal-image"><img src="' + (cat.photo_url || '') + '" alt="' + cat.name + ' - ' + cat.breed + '" loading="lazy"></div>' +
+                        '<div class="royal-info">' +
+                            '<h3>' + cat.name + '</h3>' +
+                            '<p class="royal-breed">' + (cat.breed || '') + '</p>' +
+                            '<p class="royal-desc">' + (cat.bio || '') + '</p>' +
+                            '<div class="royal-details">' + details.map(function (d) { return '<span>' + d + '</span>'; }).join('') + '</div>' +
+                        '</div>';
+                    royalsGrid.appendChild(card);
+                });
+            }).catch(function () { /* fail silently - static HTML fallback */ });
+    }
+
+    // --- Dynamic pricing from config ---
+    var pricingBar = document.querySelector('.pricing-bar');
+    if (pricingBar) {
+        fetch(API + '/config')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.config) return;
+                var c = data.config;
+                var price = c.kitten_base_price || '1,800';
+                var deposit = c.deposit_amount || '500';
+                var info = pricingBar.querySelector('.pricing-info p');
+                if (info) {
+                    info.innerHTML = '<strong>Starting at $' + Number(price).toLocaleString() + '</strong> for approved pet owners (no breeding rights). Breeding rights are available for selected candidates at an additional fee. A <strong>$' + deposit + ' non-refundable deposit</strong> secures your kitten, applied toward the total adoption fee.';
+                }
+            }).catch(function () {});
+    }
+
+    // --- Dynamic FAQ pricing ---
+    var faqPricing = document.getElementById('faqPricing');
+    if (faqPricing) {
+        fetch(API + '/config')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.config) return;
+                var c = data.config;
+                faqPricing.textContent = 'Oriental Shorthair kittens start at $' + Number(c.kitten_base_price || 1800).toLocaleString() + ' for pet quality. Breeding rights are reserved for selected candidates and priced separately. A $' + (c.deposit_amount || 500) + ' non-refundable deposit secures your kitten, applied toward the total fee.';
+            }).catch(function () {});
+    }
+
     // --- Live kitten status from API ---
     var kittensGrid = document.getElementById('kittensGrid');
     if (kittensGrid) {
-        fetch('https://portal.blueskycattery.com/api/kittens/status')
+        fetch(API + '/kittens/status')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (!data.kittens || !data.kittens.length) return;
@@ -166,7 +229,7 @@ document.addEventListener('keydown', function (e) {
 
 
 // --- Portal API ---
-var PORTAL_API = 'https://portal.blueskycattery.com/api';
+var PORTAL_API = API || 'https://portal.blueskycattery.com/api';
 
 // Contact Form - sends to portal API, redirects to thanks page
 function submitContactForm(e) {
