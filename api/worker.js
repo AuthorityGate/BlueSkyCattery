@@ -354,7 +354,81 @@ function gradeApplication(app) {
   };
 }
 
-// ---- Email Sending (via MailChannels or FormSubmit) ----
+// ---- AI-Powered Application Analysis (Cloudflare Workers AI) ----
+
+async function aiAnalyzeApplication(app, baseGrading, env) {
+  try {
+    const prompt = `You are an expert cat breeder evaluating adoption applications for Oriental Shorthair kittens. These are rare, high-maintenance, vocal cats that need experienced owners, companion cats, and indoor-only homes.
+
+Analyze this application and provide a JSON response with:
+1. "score_adjustment" (integer -15 to +15): adjust the base score up or down based on your analysis
+2. "ai_highlights" (array of strings): additional positive signals you detected in their writing
+3. "ai_risks" (array of strings): additional concerns or red flags
+4. "sincerity" (1-10): how genuine and thoughtful are their responses
+5. "knowledge" (1-10): how well do they actually understand the breed
+6. "red_flags" (array of strings): any deception, vagueness, or concerning patterns
+7. "summary" (string): 2-3 sentence overall assessment for the breeder
+
+APPLICATION DATA:
+- Purpose: ${app.purpose || 'pet'}
+- Housing: ${app.housing_type} (${app.housing_own_rent})
+- Household: ${app.household_members || 'Not provided'}
+- Work Schedule: ${app.work_schedule || 'Not provided'}
+- Current Pets: ${app.other_pets || 'None listed'}
+- Pet Source: ${app.pet_source || 'Not provided'}
+- Pet History: ${app.pet_history || 'Not provided'}
+- Surrendered Pets: ${app.surrender_history || 'Not answered'} ${app.surrender_details || ''}
+- Cat Experience: ${app.cat_experience || 'Not provided'}
+- Why Oriental: ${app.why_oriental || 'Not provided'}
+- Vocal Comfort: ${app.vocal_comfort || 'Not provided'}
+- Adjustment Plan: ${app.adjustment_plan || 'Not provided'}
+- Rehome Circumstances: ${app.rehome_circumstances || 'Not provided'}
+- Indoor Only: ${app.indoor_only || 'Not answered'}
+- Enrichment Plan: ${app.enrichment_plan || 'Not provided'}
+- Spay/Neuter Opinion: ${app.spay_neuter_opinion || 'Not provided'}
+- Financial Readiness: ${app.financial_readiness || 'Not provided'}
+- Vet Name: ${app.vet_name || 'Not provided'}
+- Vet Phone: ${app.vet_phone || 'Not provided'}
+- Pet Health History: ${app.pet_health_history || 'Not provided'}
+- Allergies: ${app.allergies || 'Not provided'}
+- Verify Cat Count: ${app.verify_cat_count || 'Not provided'}
+- Home Description: ${app.verify_home_description || 'Not provided'}
+- How Found Us: ${app.how_found_us || 'Not provided'}
+
+Base score from rules: ${baseGrading.score}/100
+
+RESPOND WITH ONLY VALID JSON, no markdown, no explanation outside the JSON.`;
+
+    const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: [
+        { role: 'system', content: 'You are a cat breeder application reviewer. Respond ONLY with valid JSON. No markdown formatting.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 600
+    });
+
+    const responseText = aiResponse.response || '';
+    // Extract JSON from response (handle potential markdown wrapping)
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const analysis = JSON.parse(jsonMatch[0]);
+    return {
+      scoreAdjustment: Math.max(-15, Math.min(15, parseInt(analysis.score_adjustment) || 0)),
+      aiHighlights: Array.isArray(analysis.ai_highlights) ? analysis.ai_highlights : [],
+      aiRisks: Array.isArray(analysis.ai_risks) ? analysis.ai_risks : [],
+      sincerity: parseInt(analysis.sincerity) || 5,
+      knowledge: parseInt(analysis.knowledge) || 5,
+      redFlags: Array.isArray(analysis.red_flags) ? analysis.red_flags : [],
+      summary: analysis.summary || ''
+    };
+  } catch (e) {
+    console.error('AI analysis failed:', e);
+    return null;
+  }
+}
+
+// ---- Email Sending (via Brevo) ----
 
 // BREVO_API_KEY is set as a Cloudflare Worker secret (env.BREVO_API_KEY)
 let _brevoKey = null;
@@ -543,6 +617,31 @@ export default {
 
         const data = await request.json();
         const grading = gradeApplication(data);
+
+        // AI analysis (non-blocking — if it fails, we still have rule-based score)
+        let aiResult = null;
+        try {
+          if (env.AI) {
+            aiResult = await aiAnalyzeApplication(data, grading, env);
+            if (aiResult) {
+              // Merge AI findings into grading
+              grading.score = Math.max(0, Math.min(100, grading.score + aiResult.scoreAdjustment));
+              grading.highlights = grading.highlights.concat(aiResult.aiHighlights);
+              grading.risks = grading.risks.concat(aiResult.aiRisks);
+              if (aiResult.redFlags.length > 0) grading.risks = grading.risks.concat(aiResult.redFlags.map(f => 'AI FLAG: ' + f));
+              grading.categories.ai = {
+                score: aiResult.scoreAdjustment,
+                max: 15,
+                label: 'AI Analysis',
+                sincerity: aiResult.sincerity,
+                knowledge: aiResult.knowledge,
+                summary: aiResult.summary
+              };
+              // Update grade label
+              grading.grade = grading.score >= 80 ? 'Excellent' : grading.score >= 65 ? 'Good' : grading.score >= 45 ? 'Fair' : 'Needs Review';
+            }
+          }
+        } catch (e) { console.error('AI analysis error:', e); }
 
         await env.DB.prepare(`
           INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, landlord_info, pet_source, pet_health_history, vocal_comfort, adjustment_plan, rehome_circumstances, enrichment_plan, spay_neuter_opinion, financial_readiness, verify_cat_count, verify_home_description, how_found_us, surrender_details, kitten_primary, kitten_backup1, kitten_backup2, sex_preference, purpose, highlights, risks, score, score_breakdown, status, created_at, updated_at)
@@ -1312,6 +1411,12 @@ async function showAppModal(appId) {
       }
       if (cat.flags && cat.flags.length > 0) {
         cat.flags.forEach(f => { html += '<div style="font-size:.78rem;color:#8B3A3A;margin-top:4px">&#9888; ' + f + '</div>'; });
+      }
+      if (cat.summary) {
+        html += '<div style="font-size:.82rem;color:#3E3229;margin-top:6px;padding:8px;background:#F5EDE0;border-radius:4px">';
+        html += '<strong>AI Assessment:</strong> ' + cat.summary + '<br>';
+        if (cat.sincerity) html += '<span style="color:#6B5B4B">Sincerity: ' + cat.sincerity + '/10 | Knowledge: ' + (cat.knowledge||'?') + '/10</span>';
+        html += '</div>';
       }
       html += '</div>';
     }
