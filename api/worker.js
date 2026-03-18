@@ -786,7 +786,7 @@ async function renderLeads(container) {
       const approveBtn = el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:6px', onclick: async () => {
         if (confirm('Approve ' + lead.name + '? This will create their account and send a welcome email.')) {
           const res = await api('/admin/approve', { method: 'POST', body: JSON.stringify({ lead_id: lead.id }) });
-          if (res.success) { alert('Account created! Temp password: ' + res.tempPassword); renderApp(); }
+          if (res.success) { showApprovalModal(lead.name, lead.email, res.tempPassword); }
           else alert(res.error || 'Failed');
         }
       }}, 'Approve');
@@ -840,6 +840,28 @@ async function renderApplications(container) {
   panel.appendChild(table);
   if (!applications || applications.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No applications yet.</p>';
   container.appendChild(panel);
+}
+
+function showApprovalModal(name, email, password) {
+  const welcomeEmail = 'Dear ' + name + ',\\n\\nThank you for your interest in Blue Sky Cattery! We\\'re excited to invite you to complete our adoption application.\\n\\nYour login credentials:\\nPortal: https://portal.blueskycattery.com\\nEmail: ' + email + '\\nPassword: ' + password + '\\n\\nPlease log in and complete the application at your earliest convenience. We look forward to learning more about you!\\n\\nWarm regards,\\nDeanna\\nBlue Sky Cattery';
+
+  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) { bg.remove(); renderApp(); }}});
+  const modal = el('div', { class: 'modal' });
+  modal.innerHTML = '<h2 style="color:#7A8B6F">Account Created Successfully!</h2>' +
+    '<p style="margin:12px 0">An applicant account has been created for <strong>' + name + '</strong>.</p>' +
+    '<div class="field"><label>Email</label><div class="value">' + email + '</div></div>' +
+    '<div class="field"><label>Temporary Password</label><div class="value" style="font-family:monospace;font-size:1.1rem;font-weight:700;color:#A0522D;letter-spacing:1px">' + password + '</div></div>' +
+    '<div class="field"><label>Portal URL</label><div class="value">https://portal.blueskycattery.com</div></div>' +
+    '<hr style="margin:20px 0;border:none;border-top:1px solid #D4C5A9">' +
+    '<h3 style="margin-bottom:8px">Welcome Email (copy & send from your email)</h3>' +
+    '<textarea id="welcomeEmailText" rows="12" style="width:100%;font-family:inherit;font-size:.88rem;padding:12px;border:1px solid #D4C5A9;border-radius:8px;background:#F5EDE0">' + welcomeEmail + '</textarea>' +
+    '<div class="actions">' +
+    '<button class="btn btn-outline" onclick="navigator.clipboard.writeText(document.getElementById(\\'welcomeEmailText\\').value);this.textContent=\\'Copied!\\';">Copy Email Text</button>' +
+    '<button class="btn btn-primary" onclick="window.open(\\'mailto:' + email + '?subject=Welcome to Blue Sky Cattery - Application Portal Access&body=' + encodeURIComponent(welcomeEmail.replace(/\\\\n/g, '\\n')) + '\\')">Open in Email Client</button>' +
+    '<button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove();renderApp();">Done</button>' +
+    '</div>';
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
 }
 
 async function showAppModal(appId) {
