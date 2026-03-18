@@ -630,11 +630,20 @@ export default {
       // ADMIN: LEADS
       // =====================
 
-      // Get all leads
+      // Get all leads (with optional search & filter)
       if (path === '/api/admin/leads' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const leads = await env.DB.prepare('SELECT * FROM leads ORDER BY created_at DESC').all();
+        const search = url.searchParams.get('search') || '';
+        const status = url.searchParams.get('status') || '';
+        const source = url.searchParams.get('source') || '';
+        let sql = 'SELECT * FROM leads WHERE 1=1';
+        const params = [];
+        if (search) { sql += ' AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(phone) LIKE ?)'; params.push('%'+search.toLowerCase()+'%', '%'+search.toLowerCase()+'%', '%'+search.toLowerCase()+'%'); }
+        if (status) { sql += ' AND status = ?'; params.push(status); }
+        if (source) { sql += ' AND source = ?'; params.push(source); }
+        sql += ' ORDER BY created_at DESC';
+        const leads = await env.DB.prepare(sql).bind(...params).all();
         return json({ leads: leads.results });
       }
 
@@ -698,16 +707,20 @@ export default {
       // ADMIN: APPLICATIONS
       // =====================
 
-      // Get all applications
+      // Get all applications (with search & filter)
       if (path === '/api/admin/applications' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const apps = await env.DB.prepare(`
-          SELECT a.*, u.email as user_email
-          FROM applications a
-          JOIN users u ON a.user_id = u.id
-          ORDER BY a.created_at DESC
-        `).all();
+        const search = url.searchParams.get('search') || '';
+        const status = url.searchParams.get('status') || '';
+        const purpose = url.searchParams.get('purpose') || '';
+        let sql = 'SELECT a.*, u.email as user_email FROM applications a JOIN users u ON a.user_id = u.id WHERE 1=1';
+        const params = [];
+        if (search) { sql += ' AND (LOWER(a.full_name) LIKE ? OR LOWER(a.email) LIKE ?)'; params.push('%'+search.toLowerCase()+'%', '%'+search.toLowerCase()+'%'); }
+        if (status) { sql += ' AND a.status = ?'; params.push(status); }
+        if (purpose) { sql += ' AND a.purpose = ?'; params.push(purpose); }
+        sql += ' ORDER BY a.created_at DESC';
+        const apps = await env.DB.prepare(sql).bind(...params).all();
         return json({ applications: apps.results });
       }
 
@@ -1117,6 +1130,30 @@ export default {
       }
 
       // =====================
+      // ADMIN: EXPORT LEADS CSV
+      if (path === '/api/admin/leads/export' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const leads = await env.DB.prepare('SELECT name, email, phone, source, status, home_address, marital_status, partner_name, partner_email, created_at FROM leads ORDER BY created_at DESC').all();
+        let csv = 'Name,Email,Phone,Source,Status,Address,Marital Status,Partner Name,Partner Email,Created\n';
+        leads.results.forEach(l => {
+          csv += [l.name,l.email,l.phone||'',l.source,l.status,l.home_address||'',l.marital_status||'',l.partner_name||'',l.partner_email||'',l.created_at].map(v => '"' + (v||'').replace(/"/g, '""') + '"').join(',') + '\n';
+        });
+        return new Response(csv, { headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="leads-export.csv"' }});
+      }
+
+      // ADMIN: EXPORT APPLICATIONS CSV
+      if (path === '/api/admin/applications/export' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const apps = await env.DB.prepare('SELECT full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, indoor_only, purpose, kitten_primary, sex_preference, score, status, created_at FROM applications WHERE status != ? ORDER BY created_at DESC').bind('draft').all();
+        let csv = 'Name,Email,Phone,City,Housing,Own/Rent,Pets,Experience,Indoor,Purpose,Kitten Choice,Sex Pref,Score,Status,Submitted\n';
+        apps.results.forEach(a => {
+          csv += [a.full_name,a.email,a.phone||'',a.city_state||'',a.housing_type||'',a.housing_own_rent||'',a.other_pets||'',a.cat_experience||'',a.indoor_only||'',a.purpose||'',a.kitten_primary||'',a.sex_preference||'',a.score,a.status,a.created_at].map(v => '"' + String(v||'').replace(/"/g, '""') + '"').join(',') + '\n';
+        });
+        return new Response(csv, { headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="applications-export.csv"' }});
+      }
+
       // ADMIN: SEND MESSAGE TO LEAD
       if (path === '/api/admin/send-message' && method === 'POST') {
         const session = await requireAdmin();
@@ -1600,37 +1637,65 @@ async function renderDashboard(container) {
 
 // ---- Leads ----
 
+let leadSearch = '';
+let leadStatusFilter = '';
+
 async function renderLeads(container) {
-  const { leads } = await api('/admin/leads');
+  const params = new URLSearchParams();
+  if (leadSearch) params.set('search', leadSearch);
+  if (leadStatusFilter) params.set('status', leadStatusFilter);
+  const { leads } = await api('/admin/leads?' + params.toString());
   const panel = el('div', { class: 'panel active' });
-  panel.innerHTML = '<h2 style="margin:20px 0 12px">Leads & Contacts</h2>';
+
+  // Header with search and export
+  let toolbar = '<div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 16px;flex-wrap:wrap;gap:12px">';
+  toolbar += '<h2 style="margin:0">Leads & Contacts</h2>';
+  toolbar += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+  toolbar += '<input type="text" id="leadSearchInput" placeholder="Search name, email, phone..." value="' + esc(leadSearch) + '" style="padding:8px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;width:220px">';
+  toolbar += '<select id="leadStatusFilter" style="padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem"><option value="">All Status</option><option value="new"' + (leadStatusFilter==='new'?' selected':'') + '>New</option><option value="approved"' + (leadStatusFilter==='approved'?' selected':'') + '>Approved</option><option value="contacted"' + (leadStatusFilter==='contacted'?' selected':'') + '>Contacted</option></select>';
+  toolbar += '<button class="btn btn-sm btn-outline" id="leadSearchBtn">Search</button>';
+  toolbar += '<a href="' + API + '/admin/leads/export" class="btn btn-sm btn-outline" style="text-decoration:none;color:#6B5B4B" target="_blank">Export CSV</a>';
+  toolbar += '</div></div>';
+  panel.innerHTML = toolbar;
+
+  // Results count
+  panel.innerHTML += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (leads||[]).length + ' lead(s) found</div>';
 
   const table = el('table');
-  table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Source</th><th>Status</th><th>When</th><th>Actions</th></tr></thead>';
+  table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Source</th><th>Status</th><th>When</th><th>Actions</th></tr></thead>';
   const tbody = el('tbody');
   (leads || []).forEach(lead => {
     const tr = el('tr');
-    tr.innerHTML = '<td><strong>'+esc(lead.name)+'</strong></td><td>'+esc(lead.email)+'</td><td>'+esc(lead.source)+'</td><td>'+badge(lead.status)+'</td><td>'+timeAgo(lead.created_at)+'</td>';
-    const actionTd = el('td');
-    const viewBtn = el('button', { class: 'btn btn-outline btn-sm', onclick: () => showLeadModal(lead.id) }, 'View');
-    actionTd.appendChild(viewBtn);
+    tr.innerHTML = '<td><strong>'+esc(lead.name)+'</strong></td><td>'+esc(lead.email)+'</td><td>'+esc(lead.phone||'—')+'</td><td>'+esc(lead.source)+'</td><td>'+badge(lead.status)+'</td><td>'+timeAgo(lead.created_at)+'</td>';
+    const actionTd = el('td', { style: 'white-space:nowrap' });
+    actionTd.appendChild(el('button', { class: 'btn btn-outline btn-sm', onclick: () => showLeadModal(lead.id) }, 'View'));
     if (lead.status === 'new') {
-      const approveBtn = el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:6px', onclick: async () => {
+      actionTd.appendChild(el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:4px', onclick: async () => {
         if (confirm('Approve ' + lead.name + '? This will create their account and send a welcome email.')) {
           const res = await api('/admin/approve', { method: 'POST', body: JSON.stringify({ lead_id: lead.id }) });
           if (res.success) { showApprovalModal(lead.name, lead.email, res.tempPassword); }
           else alert(res.error || 'Failed');
         }
-      }}, 'Approve');
-      actionTd.appendChild(approveBtn);
+      }}, 'Approve'));
     }
     tr.appendChild(actionTd);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
   panel.appendChild(table);
-  if (!leads || leads.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No leads yet. They will appear here when someone uses the contact or reservation form.</p>';
+  if (!leads || leads.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No leads match your search.</p>';
+
   container.appendChild(panel);
+
+  // Attach search handlers
+  document.getElementById('leadSearchBtn').onclick = () => {
+    leadSearch = document.getElementById('leadSearchInput').value;
+    leadStatusFilter = document.getElementById('leadStatusFilter').value;
+    container.innerHTML = '';
+    renderLeads(container);
+  };
+  document.getElementById('leadSearchInput').onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('leadSearchBtn').click(); };
+  document.getElementById('leadStatusFilter').onchange = () => { document.getElementById('leadSearchBtn').click(); };
 }
 
 async function showLeadModal(leadId) {
@@ -1736,8 +1801,15 @@ async function renderApplications(container) {
     panel.innerHTML = candsHtml;
   }
 
-  // All Applications Table
-  panel.innerHTML += '<h2 style="margin:20px 0 12px">All Applications</h2>';
+  // All Applications Table with search
+  let appToolbar = '<div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 12px;flex-wrap:wrap;gap:12px">';
+  appToolbar += '<h2 style="margin:0">All Applications (' + applications.length + ')</h2>';
+  appToolbar += '<div style="display:flex;gap:8px;align-items:center">';
+  appToolbar += '<input type="text" id="appSearchInput" placeholder="Search name or email..." style="padding:8px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;width:200px">';
+  appToolbar += '<select id="appStatusFilter" style="padding:8px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem"><option value="">All Status</option><option value="submitted">Submitted</option><option value="reviewed">Reviewed</option><option value="approved">Approved</option><option value="waitlist">Waitlist</option><option value="rejected">Rejected</option></select>';
+  appToolbar += '<a href="' + API + '/admin/applications/export" class="btn btn-sm btn-outline" style="text-decoration:none;color:#6B5B4B" target="_blank">Export CSV</a>';
+  appToolbar += '</div></div>';
+  panel.innerHTML += appToolbar;
 
   const table = el('table');
   table.innerHTML = '<thead><tr><th>Applicant</th><th>Score</th><th>Purpose</th><th>Primary Kitten</th><th>Sex Pref</th><th>Status</th><th>Submitted</th><th>Actions</th></tr></thead>';
@@ -1760,6 +1832,26 @@ async function renderApplications(container) {
   panel.appendChild(table);
   if (applications.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No applications yet.</p>';
   container.appendChild(panel);
+
+  // Client-side filter (instant, no API call)
+  const appSearch = document.getElementById('appSearchInput');
+  const appFilter = document.getElementById('appStatusFilter');
+  if (appSearch && tbody) {
+    const filterApps = () => {
+      const q = (appSearch.value || '').toLowerCase();
+      const s = appFilter.value;
+      const rows = tbody.querySelectorAll('tr');
+      rows.forEach((row, i) => {
+        const app = applications[i];
+        if (!app) return;
+        const matchSearch = !q || (app.full_name||'').toLowerCase().includes(q) || (app.email||'').toLowerCase().includes(q) || (app.user_email||'').toLowerCase().includes(q);
+        const matchStatus = !s || app.status === s;
+        row.style.display = (matchSearch && matchStatus) ? '' : 'none';
+      });
+    };
+    appSearch.oninput = filterApps;
+    appFilter.onchange = filterApps;
+  }
 }
 
 async function showAppModal(appId) {
