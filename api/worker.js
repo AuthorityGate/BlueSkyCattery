@@ -428,6 +428,106 @@ RESPOND WITH ONLY VALID JSON, no markdown, no explanation outside the JSON.`;
   }
 }
 
+// ---- Brevo CRM Sync ----
+
+const BREVO_LISTS = { leads: 5, approved: 6, active: 7, rejected: 8, waitlist: 9, adopters: 10, flagged: 11 };
+
+async function syncToBrevoCRM(lead, listId, extraAttrs) {
+  if (!_brevoKey) return null;
+  try {
+    const attrs = {
+      FIRSTNAME: (lead.name || '').split(' ')[0],
+      LASTNAME: (lead.name || '').split(' ').slice(1).join(' '),
+      PHONE: lead.phone || '',
+      CITY_STATE: lead.city_state || '',
+      HOME_ADDRESS: lead.home_address || '',
+      LEAD_SOURCE: lead.source || 'website',
+      LEAD_STATUS: lead.status || 'new',
+      ...extraAttrs
+    };
+
+    const res = await fetch('https://api.brevo.com/v3/contacts', {
+      method: 'POST',
+      headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: lead.email,
+        attributes: attrs,
+        listIds: [listId],
+        updateEnabled: true
+      })
+    });
+    const result = await res.json();
+    return result.id || null;
+  } catch (e) {
+    console.error('Brevo sync failed:', e);
+    return null;
+  }
+}
+
+async function updateBrevoContact(email, attrs, addToLists, removeFromLists) {
+  if (!_brevoKey) return;
+  try {
+    const body = { attributes: attrs };
+    if (addToLists) body.listIds = addToLists;
+    if (removeFromLists) body.unlinkListIds = removeFromLists;
+    await fetch('https://api.brevo.com/v3/contacts/' + encodeURIComponent(email), {
+      method: 'PUT',
+      headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  } catch (e) { console.error('Brevo update failed:', e); }
+}
+
+// ---- Cross-Application Matching ----
+
+async function findMatchingApplicants(db, app) {
+  const matches = [];
+
+  // Match by email
+  if (app.email) {
+    const emailMatches = await db.prepare('SELECT id, full_name, email, litter_code, score, status, created_at FROM applications WHERE email = ? AND id != ? ORDER BY created_at DESC').bind(app.email, app.id || 0).all();
+    emailMatches.results.forEach(m => matches.push({ type: 'Same Email', ...m }));
+  }
+
+  // Match by partner email
+  if (app.partner_email) {
+    const partnerMatches = await db.prepare('SELECT id, full_name, email, litter_code, score, status, created_at FROM applications WHERE email = ? OR partner_email = ?').bind(app.partner_email, app.partner_email).all();
+    partnerMatches.results.forEach(m => { if (m.id !== (app.id || 0)) matches.push({ type: 'Partner Email Match', ...m }); });
+  }
+
+  // Match by phone
+  if (app.phone) {
+    const cleanPhone = (app.phone || '').replace(/\D/g, '');
+    if (cleanPhone.length >= 7) {
+      const phoneMatches = await db.prepare("SELECT id, full_name, email, phone, litter_code, score, status, created_at FROM applications WHERE REPLACE(REPLACE(REPLACE(phone, '-', ''), ' ', ''), '(', '') LIKE ?").bind('%' + cleanPhone.slice(-7) + '%').all();
+      phoneMatches.results.forEach(m => { if (m.id !== (app.id || 0)) matches.push({ type: 'Phone Match', ...m }); });
+    }
+  }
+
+  // Match by home address (fuzzy)
+  if (app.home_address && app.home_address.length > 10) {
+    const addrWords = app.home_address.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+    if (addrWords.length >= 2) {
+      const addrMatches = await db.prepare("SELECT id, full_name, email, home_address, litter_code, score, status, created_at FROM applications WHERE LOWER(home_address) LIKE ? AND id != ?").bind('%' + addrWords[0] + '%', app.id || 0).all();
+      addrMatches.results.forEach(m => {
+        const mWords = (m.home_address || '').toLowerCase().split(/\s+/);
+        const overlap = addrWords.filter(w => mWords.some(mw => mw.includes(w))).length;
+        if (overlap >= 2) matches.push({ type: 'Address Match', ...m });
+      });
+    }
+  }
+
+  // Match by name (exact or very close)
+  if (app.full_name) {
+    const nameMatches = await db.prepare('SELECT id, full_name, email, litter_code, score, status, created_at FROM applications WHERE LOWER(full_name) = ? AND id != ?').bind(app.full_name.toLowerCase(), app.id || 0).all();
+    nameMatches.results.forEach(m => matches.push({ type: 'Same Name', ...m }));
+  }
+
+  // Deduplicate by id
+  const seen = new Set();
+  return matches.filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
+}
+
 // ---- Email Sending (via Brevo) ----
 
 // BREVO_API_KEY is set as a Cloudflare Worker secret (env.BREVO_API_KEY)
@@ -515,6 +615,9 @@ export default {
           'INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)'
         ).bind(leadId, 'inbound', subject || 'Contact Form', `From: ${name} (${email})\nPhone: ${phone || 'N/A'}\n\n${message}`, now()).run();
 
+        // Sync to Brevo CRM
+        await syncToBrevoCRM({ name, email, phone, source: 'contact', status: 'new' }, BREVO_LISTS.leads, {});
+
         // Notify Deanna of new contact
         await sendEmail('Deanna@blueskycattery.com', 'New Contact: ' + name,
           'New contact form submission:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nSubject: ' + (subject || 'General') + '\n\nMessage:\n' + message + '\n\n---\nView in admin portal: https://portal.blueskycattery.com/admin', 'Deanna');
@@ -549,6 +652,9 @@ export default {
         await env.DB.prepare(
           'INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)'
         ).bind(leadId, 'inbound', `Kitten Reservation - ${kitten || 'General'}`, `From: ${name} (${email})\n\n${fields}`, now()).run();
+
+        // Sync to Brevo CRM
+        await syncToBrevoCRM({ name, email, phone, source: 'reservation', status: 'new' }, BREVO_LISTS.leads, {});
 
         // Notify Deanna of new reservation
         await sendEmail('Deanna@blueskycattery.com', 'New Kitten Reservation: ' + name,
@@ -644,8 +750,8 @@ export default {
         } catch (e) { console.error('AI analysis error:', e); }
 
         await env.DB.prepare(`
-          INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, landlord_info, pet_source, pet_health_history, vocal_comfort, adjustment_plan, rehome_circumstances, enrichment_plan, spay_neuter_opinion, financial_readiness, verify_cat_count, verify_home_description, how_found_us, surrender_details, kitten_primary, kitten_backup1, kitten_backup2, sex_preference, purpose, highlights, risks, score, score_breakdown, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, landlord_info, pet_source, pet_health_history, vocal_comfort, adjustment_plan, rehome_circumstances, enrichment_plan, spay_neuter_opinion, financial_readiness, verify_cat_count, verify_home_description, how_found_us, surrender_details, kitten_primary, kitten_backup1, kitten_backup2, sex_preference, purpose, highlights, risks, score, score_breakdown, status, home_address, marital_status, partner_name, partner_email, partner_phone, litter_code, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           session.user_id, data.kitten_preference || null, data.full_name, data.email, data.phone,
           data.city_state, data.housing_type, data.housing_own_rent || null, data.other_pets,
@@ -661,12 +767,61 @@ export default {
           data.kitten_primary || null, data.kitten_backup1 || null, data.kitten_backup2 || null,
           data.sex_preference || null, data.purpose || 'pet',
           JSON.stringify(grading.highlights), JSON.stringify(grading.risks),
-          grading.score, JSON.stringify(grading.categories), 'submitted', now(), now()
+          grading.score, JSON.stringify(grading.categories), 'submitted',
+          data.home_address || null, data.marital_status || null,
+          data.partner_name || null, data.partner_email || null, data.partner_phone || null,
+          '2026-Chili', now(), now()
         ).run();
 
-        // Notify admin of new application
-        await sendEmail('Deanna@blueskycattery.com', 'New Application Submitted: ' + data.full_name,
-          'A new adoption application has been submitted.\n\nApplicant: ' + data.full_name + '\nEmail: ' + data.email + '\nScore: ' + grading.score + '/100\n\nReview in admin portal: https://portal.blueskycattery.com/admin', 'Deanna');
+        // Cross-application matching
+        const appRecord = { id: 0, email: data.email, phone: data.phone, full_name: data.full_name, home_address: data.home_address, partner_email: data.partner_email };
+        const priorMatches = await findMatchingApplicants(env.DB, appRecord);
+        if (priorMatches.length > 0) {
+          // Update the application with match info
+          const matchInfo = priorMatches.map(m => m.type + ': ' + m.full_name + ' (' + m.email + ') - ' + m.litter_code + ' score:' + m.score + ' status:' + m.status).join('; ');
+          grading.risks.push('PRIOR APPLICATION MATCH: ' + priorMatches.length + ' related record(s) found');
+          // Save match flags
+          await env.DB.prepare('UPDATE applications SET match_flags = ?, previous_app_ids = ?, risks = ? WHERE user_id = ? ORDER BY id DESC LIMIT 1')
+            .bind(matchInfo, priorMatches.map(m => m.id).join(','), JSON.stringify(grading.risks), session.user_id).run();
+        }
+
+        // Sync to Brevo CRM with application data
+        const riskLevel = grading.risks.length === 0 ? 'low' : grading.risks.length <= 2 ? 'medium' : 'high';
+        await updateBrevoContact(data.email, {
+          APPLICATION_SCORE: grading.score,
+          APPLICATION_GRADE: grading.grade,
+          PURPOSE: data.purpose || 'pet',
+          RISK_LEVEL: riskLevel,
+          MARITAL_STATUS: data.marital_status || '',
+          PARTNER_NAME: data.partner_name || '',
+          PARTNER_EMAIL: data.partner_email || '',
+          PARTNER_PHONE: data.partner_phone || '',
+          HOME_ADDRESS: data.home_address || '',
+          CITY_STATE: data.city_state || ''
+        }, [BREVO_LISTS.active], [BREVO_LISTS.approved]);
+
+        // If partner email provided, create/update partner in Brevo too
+        if (data.partner_email) {
+          await syncToBrevoCRM({
+            name: data.partner_name || 'Partner of ' + data.full_name,
+            email: data.partner_email,
+            phone: data.partner_phone,
+            source: 'partner',
+            status: 'partner'
+          }, BREVO_LISTS.active, {
+            PARTNER_NAME: data.full_name,
+            PARTNER_EMAIL: data.email
+          });
+        }
+
+        // Build notification with match info
+        let notification = 'A new adoption application has been submitted.\n\nApplicant: ' + data.full_name + '\nEmail: ' + data.email + '\nScore: ' + grading.score + '/100 (' + grading.grade + ')\nPurpose: ' + (data.purpose || 'pet');
+        if (data.partner_name) notification += '\nPartner: ' + data.partner_name + ' (' + (data.partner_email || 'no email') + ')';
+        if (priorMatches.length > 0) notification += '\n\n⚠ PRIOR MATCHES FOUND: ' + priorMatches.length + ' related record(s)';
+        if (grading.risks.length > 0) notification += '\n\nRisks: ' + grading.risks.join(', ');
+        notification += '\n\nReview in admin portal: https://portal.blueskycattery.com/admin';
+
+        await sendEmail('Deanna@blueskycattery.com', 'New Application: ' + data.full_name + ' (' + grading.grade + ')', notification, 'Deanna');
 
         return json({ success: true, message: 'Application submitted' });
       }
@@ -724,6 +879,9 @@ export default {
 
         // Update lead status
         await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
+
+        // Move in Brevo: Leads -> Approved Applicants
+        await updateBrevoContact(lead.email, { LEAD_STATUS: 'approved', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]);
 
         // Send welcome email
         const emailBody = `Dear ${lead.name},\n\nThank you for your interest in Blue Sky Cattery! We're excited to invite you to complete our adoption application.\n\nYour login credentials:\nEmail: ${lead.email}\nPassword: ${password}\n\nPlease visit https://portal.blueskycattery.com to log in and complete your application.\n\nWe look forward to learning more about you!\n\nWarm regards,\nDeanna\nBlue Sky Cattery`;
@@ -1435,6 +1593,18 @@ async function showAppModal(appId) {
   }
 
   // Category breakdown
+  // Prior application matches
+  if (app.match_flags) {
+    html += '<div style="padding:12px 16px;background:rgba(135,165,180,.08);border:1px solid rgba(135,165,180,.25);border-radius:8px;margin-bottom:12px">';
+    html += '<strong style="color:#87A5B4;font-size:.82rem;text-transform:uppercase;letter-spacing:1px">Prior Application Matches</strong>';
+    html += '<div style="font-size:.88rem;margin-top:6px;color:#3E3229">' + app.match_flags.split(';').join('<br>') + '</div>';
+    if (app.previous_app_ids) html += '<div style="font-size:.78rem;color:#6B5B4B;margin-top:4px">Related IDs: ' + app.previous_app_ids + '</div>';
+    html += '</div>';
+  }
+  if (app.litter_code) {
+    html += '<div style="font-size:.85rem;color:#6B5B4B;margin-bottom:12px">Litter: <strong>' + app.litter_code + '</strong></div>';
+  }
+
   html += '<h3 style="margin:16px 0 8px">Score Breakdown by Category</h3><div class="score-detail">';
   Object.entries(cats).forEach(([key, cat]) => {
     if (typeof cat === 'object' && cat.label) {
@@ -1461,7 +1631,8 @@ async function showAppModal(appId) {
 
   // Full application details
   const sections = [
-    { title: 'Personal', fields: [['Full Name', app.full_name], ['Email', app.email], ['Phone', app.phone], ['City/State', app.city_state]] },
+    { title: 'Personal', fields: [['Full Name', app.full_name], ['Email', app.email], ['Phone', app.phone], ['City/State', app.city_state], ['Home Address', app.home_address], ['Marital Status', app.marital_status]] },
+    { title: 'Partner / Co-Applicant', fields: [['Partner Name', app.partner_name], ['Partner Email', app.partner_email], ['Partner Phone', app.partner_phone]] },
     { title: 'Home', fields: [['Housing', app.housing_type], ['Own/Rent', app.housing_own_rent], ['Landlord Info', app.landlord_info], ['Household', app.household_members], ['Schedule', app.work_schedule], ['Allergies', app.allergies]] },
     { title: 'Pets', fields: [['Current Pets', app.other_pets], ['Pet Source', app.pet_source], ['Pet History', app.pet_history], ['Health History', app.pet_health_history], ['Surrendered?', app.surrender_history], ['Surrender Details', app.surrender_details]] },
     { title: 'Knowledge', fields: [['Experience', app.cat_experience], ['Why Oriental', app.why_oriental], ['Vocal Comfort', app.vocal_comfort], ['Adjustment Plan', app.adjustment_plan], ['Rehome Circumstances', app.rehome_circumstances]] },
@@ -1671,6 +1842,25 @@ function renderApplicationForm() {
       <div class="form-row">
         <div class="form-group"><label>Phone Number *</label><input type="tel" name="phone" required></div>
         <div class="form-group"><label>City / State *</label><input type="text" name="city_state" required></div>
+      </div>
+      <div class="form-group"><label>Full Home Address *</label><input type="text" name="home_address" required placeholder="Street, City, State, ZIP">
+        <div class="hint">Used for verification and to ensure we can deliver your kitten safely.</div></div>
+
+      <div class="form-section">Relationship & Household Decision-Makers</div>
+      <div class="form-row">
+        <div class="form-group"><label>Marital / Relationship Status *</label>
+          <select name="marital_status" required><option value="">Select...</option><option value="single">Single</option><option value="married">Married</option><option value="partner">Long-term Partner / Living Together</option><option value="divorced">Divorced / Separated</option><option value="other">Other</option></select></div>
+        <div class="form-group"><label>Does a spouse or partner live in the household? *</label>
+          <select name="has_partner" id="hasPartner" onchange="document.getElementById('partnerFields').style.display=this.value==='yes'?'block':'none'"><option value="">Select...</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+      </div>
+      <div id="partnerFields" style="display:none">
+        <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:12px">Since your partner is a household decision-maker, we need their information as well. Both parties must agree to the adoption terms.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Partner's Full Name</label><input type="text" name="partner_name"></div>
+          <div class="form-group"><label>Partner's Email</label><input type="email" name="partner_email">
+            <div class="hint">We may send them a confirmation of the adoption agreement.</div></div>
+        </div>
+        <div class="form-group"><label>Partner's Phone Number</label><input type="tel" name="partner_phone"></div>
       </div>
 
       <div class="form-section">Your Home Environment</div>
