@@ -563,6 +563,7 @@ h1, h2, h3, h4 {
     margin-bottom: 16px;
 }
 
+.feature-card h2,
 .feature-card h3 {
     font-size: 1.15rem;
     margin-bottom: 12px;
