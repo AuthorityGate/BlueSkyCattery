@@ -98,24 +98,34 @@ function submitReservation(e) {
     e.preventDefault();
     var form = document.getElementById('reservationForm');
     var success = document.getElementById('formSuccess');
+    var submitBtn = form.querySelector('button[type="submit"]');
 
-    // Collect form data
+    // Build form data with kitten info
     var formData = new FormData(form);
-    var data = { kitten: selectedKitten };
-    formData.forEach(function (value, key) {
-        data[key] = value;
+    formData.append('_subject', 'Kitten Reservation Request - Kitten #' + selectedKitten);
+    formData.append('Kitten', 'Kitten #' + selectedKitten);
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending...';
+
+    fetch('https://forms.blueskycattery.com/submit', {
+        method: 'POST',
+        body: formData,
+        headers: { 'Accept': 'application/json' }
+    }).then(function (response) {
+        if (response.ok) {
+            form.style.display = 'none';
+            success.style.display = 'block';
+            form.reset();
+        } else {
+            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+        }
+    }).catch(function () {
+        alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
+    }).finally(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit Reservation Request';
     });
-
-    // Store locally (in production, send to server/email service)
-    var reservations = JSON.parse(localStorage.getItem('bluesky_reservations') || '[]');
-    data.timestamp = new Date().toISOString();
-    reservations.push(data);
-    localStorage.setItem('bluesky_reservations', JSON.stringify(reservations));
-
-    // Show success
-    form.style.display = 'none';
-    success.style.display = 'block';
-    form.reset();
 }
 
 // Close modal on overlay click
@@ -138,20 +148,30 @@ function submitContact(e) {
     e.preventDefault();
     var form = document.getElementById('contactForm');
     var success = document.getElementById('contactSuccess');
+    var submitBtn = form.querySelector('button[type="submit"]');
 
     var formData = new FormData(form);
-    var data = {};
-    formData.forEach(function (value, key) {
-        data[key] = value;
+    formData.append('_subject', 'Blue Sky Cattery - ' + (formData.get('subject') || 'Contact Form'));
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending...';
+
+    fetch('https://forms.blueskycattery.com/submit', {
+        method: 'POST',
+        body: formData,
+        headers: { 'Accept': 'application/json' }
+    }).then(function (response) {
+        if (response.ok) {
+            form.style.display = 'none';
+            success.style.display = 'block';
+            form.reset();
+        } else {
+            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+        }
+    }).catch(function () {
+        alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
+    }).finally(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Send Message';
     });
-
-    // Store locally
-    var contacts = JSON.parse(localStorage.getItem('bluesky_contacts') || '[]');
-    data.timestamp = new Date().toISOString();
-    contacts.push(data);
-    localStorage.setItem('bluesky_contacts', JSON.stringify(contacts));
-
-    form.style.display = 'none';
-    success.style.display = 'block';
-    form.reset();
 }
