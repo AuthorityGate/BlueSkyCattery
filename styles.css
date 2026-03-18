@@ -65,39 +65,6 @@ img {
    CAT SILHOUETTES & DECORATIVE ELEMENTS
    ======================================== */
 
-/* Sitting cat silhouette - peeking from left edge */
-.section:nth-of-type(3)::before {
-    content: '';
-    position: absolute;
-    left: -10px;
-    bottom: 60px;
-    width: 120px;
-    height: 180px;
-    opacity: 0.04;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 180'%3E%3Cpath d='M60 180c-15 0-25-5-30-15-3-6-4-14-4-22v-20c0-8 2-15 6-20 2-3 5-5 8-7-8-5-14-12-16-22-1-5-1-10 0-15 2-8 6-14 12-18l-4-8c-2-4-3-8-2-12 1-5 4-9 8-12l6-5V10c0-3 1-6 3-8 2-2 5-3 8-2 2 1 3 2 4 4l5 10 5-10c1-2 2-3 4-4 3-1 6 0 8 2 2 2 3 5 3 8v14l6 5c4 3 7 7 8 12 1 4 0 8-2 12l-4 8c6 4 10 10 12 18 1 5 1 10 0 15-2 10-8 17-16 22 3 2 6 4 8 7 4 5 6 12 6 20v20c0 8-1 16-4 22-5 10-15 15-30 15z' fill='%233E3229'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-size: contain;
-    pointer-events: none;
-    z-index: 1;
-}
-
-/* Cat stretching - peeking from right edge */
-.section:nth-of-type(6)::after {
-    content: '';
-    position: absolute;
-    right: -5px;
-    top: 80px;
-    width: 160px;
-    height: 100px;
-    opacity: 0.04;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 100'%3E%3Cpath d='M10 85c0-5 2-10 5-14l15-18c3-4 8-6 13-6h10l8-12c2-3 5-5 8-6l12-4V12c0-3 1-5 3-7s5-2 7-1l8 6 8-6c2-1 5-1 7 1s3 4 3 7v13l12 4c3 1 6 3 8 6l8 12h10c5 0 10 2 13 6l15 18c3 4 5 9 5 14v5H10v-5z' fill='%233E3229'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-size: contain;
-    pointer-events: none;
-    z-index: 1;
-    transform: scaleX(-1);
-}
-
 /* Paw prints scattered decoration */
 .breeds-preview::before,
 .home-gallery::before {
