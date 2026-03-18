@@ -229,20 +229,27 @@ function gradeApplication(app) {
 
 // ---- Email Sending (via MailChannels or FormSubmit) ----
 
-async function sendEmail(to, subject, body) {
-  // Use FormSubmit for email delivery
+// BREVO_API_KEY is set as a Cloudflare Worker secret (env.BREVO_API_KEY)
+let _brevoKey = null;
+
+async function sendEmail(to, subject, body, toName) {
+  if (!_brevoKey) return false;
   try {
-    await fetch('https://formsubmit.co/ajax/' + to, {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      headers: {
+        'api-key': _brevoKey,
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
-        _subject: subject,
-        message: body,
-        name: 'Blue Sky Cattery',
-        email: 'noreply@blueskycattery.com'
+        sender: { name: 'Blue Sky Cattery', email: 'kittens@blueskycattery.com' },
+        to: [{ email: to, name: toName || to }],
+        subject: subject,
+        textContent: body
       })
     });
-    return true;
+    const result = await res.json();
+    return !!result.messageId;
   } catch (e) {
     console.error('Email failed:', e);
     return false;
@@ -253,6 +260,9 @@ async function sendEmail(to, subject, body) {
 
 export default {
   async fetch(request, env) {
+    // Set Brevo key from environment secret
+    _brevoKey = env.BREVO_API_KEY || null;
+
     // Ensure sessions table exists
     try {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)').run();
@@ -304,6 +314,10 @@ export default {
           'INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)'
         ).bind(leadId, 'inbound', subject || 'Contact Form', `From: ${name} (${email})\nPhone: ${phone || 'N/A'}\n\n${message}`, now()).run();
 
+        // Notify Deanna of new contact
+        await sendEmail('Deanna@blueskycattery.com', 'New Contact: ' + name,
+          'New contact form submission:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nSubject: ' + (subject || 'General') + '\n\nMessage:\n' + message + '\n\n---\nView in admin portal: https://portal.blueskycattery.com/admin', 'Deanna');
+
         return json({ success: true, message: 'Contact saved' });
       }
 
@@ -334,6 +348,10 @@ export default {
         await env.DB.prepare(
           'INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)'
         ).bind(leadId, 'inbound', `Kitten Reservation - ${kitten || 'General'}`, `From: ${name} (${email})\n\n${fields}`, now()).run();
+
+        // Notify Deanna of new reservation
+        await sendEmail('Deanna@blueskycattery.com', 'New Kitten Reservation: ' + name,
+          'New kitten reservation request:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nKitten: ' + (kitten || 'General') + '\n\nFull details:\n' + fields + '\n\n---\nView in admin portal: https://portal.blueskycattery.com/admin', 'Deanna');
 
         return json({ success: true, message: 'Reservation saved' });
       }
@@ -472,7 +490,7 @@ export default {
         // Send welcome email
         const emailBody = `Dear ${lead.name},\n\nThank you for your interest in Blue Sky Cattery! We're excited to invite you to complete our adoption application.\n\nYour login credentials:\nEmail: ${lead.email}\nPassword: ${password}\n\nPlease visit https://portal.blueskycattery.com to log in and complete your application.\n\nWe look forward to learning more about you!\n\nWarm regards,\nDeanna\nBlue Sky Cattery`;
 
-        await sendEmail(lead.email, 'Welcome to Blue Sky Cattery - Application Portal Access', emailBody);
+        await sendEmail(lead.email, 'Welcome to Blue Sky Cattery - Application Portal Access', emailBody, lead.name);
 
         // Record the welcome email was sent
         await env.DB.prepare(
