@@ -69,6 +69,53 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    // --- Live kitten status from API ---
+    var kittensGrid = document.getElementById('kittensGrid');
+    if (kittensGrid) {
+        fetch('https://portal.blueskycattery.com/api/kittens/status')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.kittens || !data.kittens.length) return;
+                var cards = kittensGrid.querySelectorAll('.kitten-card');
+                data.kittens.forEach(function (k, i) {
+                    var card = cards[i];
+                    if (!card) return;
+
+                    // Update status badge
+                    var badge = card.querySelector('.kitten-status');
+                    if (badge) {
+                        badge.className = 'kitten-status ' + k.status;
+                        var labels = { available: 'Available', pending: 'Pending Deposit', reserved: 'Reserved', sold: 'Sold' };
+                        badge.textContent = labels[k.status] || k.status;
+                    }
+
+                    // Update name
+                    var nameEl = card.querySelector('.kitten-info h3');
+                    if (nameEl && k.name) nameEl.textContent = k.name;
+
+                    // Update color
+                    var colorEl = card.querySelector('.kitten-color');
+                    if (colorEl && k.color && k.color !== 'TBD') {
+                        var colorText = k.color;
+                        if (k.sex) colorText += ' \u2014 ' + (k.sex === 'male' ? 'Male' : k.sex === 'female' ? 'Female' : k.sex);
+                        colorEl.textContent = colorText;
+                    }
+
+                    // Hide reserve button if not available
+                    var btn = card.querySelector('.btn-reserve');
+                    if (btn) {
+                        if (k.status !== 'available') {
+                            btn.disabled = true;
+                            btn.style.opacity = '0.5';
+                            btn.style.cursor = 'not-allowed';
+                            if (k.status === 'sold') { btn.textContent = 'Sold'; btn.style.background = '#8B3A3A'; }
+                            else if (k.status === 'reserved') { btn.textContent = 'Reserved'; btn.style.background = '#D4AF37'; btn.style.color = '#3E3229'; }
+                            else if (k.status === 'pending') { btn.textContent = 'Reservation Pending'; btn.style.background = '#87A5B4'; }
+                        }
+                    }
+                });
+            }).catch(function () { /* fail silently - static fallback */ });
+    }
 });
 
 

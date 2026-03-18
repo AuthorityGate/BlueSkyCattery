@@ -1644,13 +1644,21 @@ h1, h2, h3, h4 {
 }
 
 .kitten-status.reserved {
-    background: var(--color-wheat);
+    background: linear-gradient(145deg, #E0C352, var(--color-gold-light), #B89A0C);
     color: var(--color-dark-brown);
+    box-shadow: 0 2px 8px rgba(212, 175, 55, 0.4);
+}
+
+.kitten-status.pending {
+    background: linear-gradient(145deg, #9DB8C6, var(--color-sky), #6E94A5);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(135, 165, 180, 0.4);
 }
 
 .kitten-status.sold {
-    background: var(--color-barn-red);
+    background: linear-gradient(145deg, #9E4545, var(--color-barn-red), #6E2828);
     color: #fff;
+    box-shadow: 0 2px 8px rgba(139, 58, 58, 0.4);
 }
 
 .kitten-image {

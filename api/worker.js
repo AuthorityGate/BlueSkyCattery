@@ -598,6 +598,14 @@ export default {
         });
       }
 
+      // PUBLIC: Get active litter kitten statuses (for main website)
+      if (path === '/api/kittens/status' && method === 'GET') {
+        const litter = await env.DB.prepare("SELECT * FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
+        if (!litter) return json({ kittens: [] });
+        const kittens = await env.DB.prepare('SELECT number, name, color, sex, status, reserved_by FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
+        return json({ litter_code: litter.litter_code, kittens: kittens.results });
+      }
+
       // Admin: Update lead status
       if (path.match(/^\/api\/admin\/leads\/\d+$/) && method === 'PUT') {
         const session = await validateSession(env.DB, token);
