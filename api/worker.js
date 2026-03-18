@@ -516,6 +516,60 @@ export default {
         return json({ success: true });
       }
 
+      // Admin: Get litters with kittens
+      if (path === '/api/admin/litters' && method === 'GET') {
+        const session = await validateSession(env.DB, token);
+        if (!session || session.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+        const litters = await env.DB.prepare('SELECT * FROM litters ORDER BY year DESC, dam_name ASC').all();
+        const result = [];
+        for (const litter of litters.results) {
+          const kittens = await env.DB.prepare('SELECT * FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
+          result.push({ ...litter, kittens: kittens.results });
+        }
+        return json({ litters: result });
+      }
+
+      // Admin: Update kitten status
+      if (path.match(/^\/api\/admin\/kittens\/\d+$/) && method === 'PUT') {
+        const session = await validateSession(env.DB, token);
+        if (!session || session.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+        const kittenId = path.split('/').pop();
+        const data = await request.json();
+        const fields = [];
+        const values = [];
+        if (data.status !== undefined) { fields.push('status = ?'); values.push(data.status); }
+        if (data.name !== undefined) { fields.push('name = ?'); values.push(data.name); }
+        if (data.color !== undefined) { fields.push('color = ?'); values.push(data.color); }
+        if (data.sex !== undefined) { fields.push('sex = ?'); values.push(data.sex); }
+        if (data.price !== undefined) { fields.push('price = ?'); values.push(data.price); }
+        if (data.reserved_by !== undefined) { fields.push('reserved_by = ?'); values.push(data.reserved_by); }
+        if (data.reserved_lead_id !== undefined) { fields.push('reserved_lead_id = ?'); values.push(data.reserved_lead_id); }
+        if (data.notes !== undefined) { fields.push('notes = ?'); values.push(data.notes); }
+        fields.push('updated_at = ?'); values.push(now());
+        values.push(kittenId);
+        await env.DB.prepare('UPDATE kittens SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
+        return json({ success: true });
+      }
+
+      // Admin: Add a new litter
+      if (path === '/api/admin/litters' && method === 'POST') {
+        const session = await validateSession(env.DB, token);
+        if (!session || session.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+        const data = await request.json();
+        const code = data.year + '-' + data.dam_name;
+        const result = await env.DB.prepare(
+          'INSERT INTO litters (litter_code, year, dam_name, sire_name, born_date, go_home_date, total_kittens, status, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(code, data.year, data.dam_name, data.sire_name, data.born_date || null, data.go_home_date || null, data.total_kittens || 0, 'active', data.notes || null, now(), now()).run();
+        const litterId = result.meta.last_row_id;
+        // Auto-create kitten entries
+        for (let i = 1; i <= (data.total_kittens || 0); i++) {
+          await env.DB.prepare(
+            'INSERT INTO kittens (litter_id, number, name, color, status, price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+          ).bind(litterId, i, 'Kitten #' + i, 'TBD', 'available', 1800, now(), now()).run();
+        }
+        return json({ success: true, litter_id: litterId, litter_code: code });
+      }
+
       // Admin: Dashboard stats
       if (path === '/api/admin/stats' && method === 'GET') {
         const session = await validateSession(env.DB, token);
@@ -526,6 +580,9 @@ export default {
         const totalApps = await env.DB.prepare('SELECT COUNT(*) as count FROM applications').first();
         const pendingApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'submitted'").first();
         const avgScore = await env.DB.prepare('SELECT AVG(score) as avg FROM applications').first();
+        const availableKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'available'").first();
+        const reservedKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'reserved' OR status = 'pending'").first();
+        const soldKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'sold'").first();
 
         return json({
           stats: {
@@ -533,7 +590,10 @@ export default {
             newLeads: newLeads.count,
             totalApplications: totalApps.count,
             pendingApplications: pendingApps.count,
-            averageScore: Math.round(avgScore.avg || 0)
+            averageScore: Math.round(avgScore.avg || 0),
+            availableKittens: availableKittens.count,
+            reservedKittens: reservedKittens.count,
+            soldKittens: soldKittens.count
           }
         });
       }
@@ -741,7 +801,8 @@ async function renderApp() {
   const nav = el('nav', { class: 'container tabs' },
     el('button', { class: currentTab==='dashboard'?'active':'', onclick: () => { currentTab='dashboard'; renderApp(); }}, 'Dashboard'),
     el('button', { class: currentTab==='leads'?'active':'', onclick: () => { currentTab='leads'; renderApp(); }}, 'Leads'),
-    el('button', { class: currentTab==='applications'?'active':'', onclick: () => { currentTab='applications'; renderApp(); }}, 'Applications')
+    el('button', { class: currentTab==='applications'?'active':'', onclick: () => { currentTab='applications'; renderApp(); }}, 'Applications'),
+    el('button', { class: currentTab==='kittens'?'active':'', onclick: () => { currentTab='kittens'; renderApp(); }}, 'Kittens')
   );
   app.appendChild(nav);
 
@@ -751,6 +812,7 @@ async function renderApp() {
   if (currentTab === 'dashboard') await renderDashboard(content);
   else if (currentTab === 'leads') await renderLeads(content);
   else if (currentTab === 'applications') await renderApplications(content);
+  else if (currentTab === 'kittens') await renderKittens(content);
 }
 
 async function renderDashboard(container) {
@@ -762,7 +824,10 @@ async function renderDashboard(container) {
       el('div', { class: 'stat-card' }, el('div', { class: 'number' }, ''+stats.newLeads), el('div', { class: 'label' }, 'New Leads')),
       el('div', { class: 'stat-card' }, el('div', { class: 'number' }, ''+stats.totalApplications), el('div', { class: 'label' }, 'Applications')),
       el('div', { class: 'stat-card' }, el('div', { class: 'number' }, ''+stats.pendingApplications), el('div', { class: 'label' }, 'Pending Review')),
-      el('div', { class: 'stat-card' }, el('div', { class: 'number' }, ''+stats.averageScore), el('div', { class: 'label' }, 'Avg Score'))
+      el('div', { class: 'stat-card' }, el('div', { class: 'number' }, ''+stats.averageScore), el('div', { class: 'label' }, 'Avg Score')),
+      el('div', { class: 'stat-card' }, el('div', { class: 'number', style: 'color:#7A8B6F' }, ''+stats.availableKittens), el('div', { class: 'label' }, 'Available')),
+      el('div', { class: 'stat-card' }, el('div', { class: 'number', style: 'color:#D4AF37' }, ''+stats.reservedKittens), el('div', { class: 'label' }, 'Reserved/Pending')),
+      el('div', { class: 'stat-card' }, el('div', { class: 'number', style: 'color:#8B3A3A' }, ''+stats.soldKittens), el('div', { class: 'label' }, 'Sold'))
     )
   );
   container.appendChild(panel);
@@ -840,6 +905,96 @@ async function renderApplications(container) {
   panel.appendChild(table);
   if (!applications || applications.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No applications yet.</p>';
   container.appendChild(panel);
+}
+
+async function renderKittens(container) {
+  const { litters } = await api('/admin/litters');
+  const panel = el('div', { class: 'panel active' });
+  panel.innerHTML = '<h2 style="margin:20px 0 12px">Litters & Kittens</h2>';
+
+  if (!litters || litters.length === 0) {
+    panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No litters yet.</p>';
+  }
+
+  (litters || []).forEach(litter => {
+    const section = document.createElement('div');
+    section.style.cssText = 'margin-bottom:32px';
+
+    let litterHtml = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    litterHtml += '<div><h3 style="font-size:1.15rem;margin:0">Litter ' + litter.litter_code + '</h3>';
+    litterHtml += '<span style="font-size:.82rem;color:#6B5B4B">' + litter.sire_name + ' x ' + litter.dam_name + ' | Born: ' + (litter.born_date || 'TBD') + ' | Go-Home: ' + (litter.go_home_date || 'TBD') + '</span></div>';
+    litterHtml += '<span class="badge badge-' + (litter.status === 'active' ? 'approved' : 'new') + '">' + litter.status + '</span></div>';
+
+    const statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
+
+    litterHtml += '<table><thead><tr><th>#</th><th>Name</th><th>Color</th><th>Sex</th><th>Status</th><th>Reserved By</th><th>Price</th><th>Actions</th></tr></thead><tbody>';
+    (litter.kittens || []).forEach(k => {
+      const statusColor = statusColors[k.status] || '#6B5B4B';
+      litterHtml += '<tr>';
+      litterHtml += '<td><strong>' + k.number + '</strong></td>';
+      litterHtml += '<td>' + (k.name || 'Kitten #' + k.number) + '</td>';
+      litterHtml += '<td>' + (k.color || 'TBD') + '</td>';
+      litterHtml += '<td>' + (k.sex || 'TBD') + '</td>';
+      litterHtml += '<td><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;background:' + statusColor + ';color:#fff">' + k.status + '</span></td>';
+      litterHtml += '<td>' + (k.reserved_by || '—') + '</td>';
+      litterHtml += '<td>$' + (k.price || 1800) + '</td>';
+      litterHtml += '<td><button class="btn btn-outline btn-sm" data-kitten-id="' + k.id + '">Edit</button></td>';
+      litterHtml += '</tr>';
+    });
+    litterHtml += '</tbody></table>';
+
+    section.innerHTML = litterHtml;
+
+    // Attach edit handlers
+    section.querySelectorAll('[data-kitten-id]').forEach(btn => {
+      btn.onclick = () => showKittenEditModal(btn.getAttribute('data-kitten-id'), litter.kittens.find(k => k.id == btn.getAttribute('data-kitten-id')));
+    });
+
+    panel.appendChild(section);
+  });
+
+  container.appendChild(panel);
+}
+
+function showKittenEditModal(kittenId, kitten) {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = '<h2>Edit Kitten #' + kitten.number + '</h2>' +
+    '<div class="field"><label>Name</label><input type="text" id="ekName" value="' + (kitten.name || '') + '" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px"></div>' +
+    '<div class="field"><label>Color</label><input type="text" id="ekColor" value="' + (kitten.color || '') + '" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px"></div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+    '<div class="field"><label>Sex</label><select id="ekSex" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px"><option value="">TBD</option><option value="male"' + (kitten.sex === 'male' ? ' selected' : '') + '>Male</option><option value="female"' + (kitten.sex === 'female' ? ' selected' : '') + '>Female</option></select></div>' +
+    '<div class="field"><label>Price ($)</label><input type="number" id="ekPrice" value="' + (kitten.price || 1800) + '" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px"></div></div>' +
+    '<div class="field"><label>Status</label><select id="ekStatus" style="width:100%;padding:10px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;font-weight:600">' +
+    '<option value="available"' + (kitten.status === 'available' ? ' selected' : '') + '>Available</option>' +
+    '<option value="pending"' + (kitten.status === 'pending' ? ' selected' : '') + '>Reserved - Pending Deposit</option>' +
+    '<option value="reserved"' + (kitten.status === 'reserved' ? ' selected' : '') + '>Reserved - Deposit Received</option>' +
+    '<option value="sold"' + (kitten.status === 'sold' ? ' selected' : '') + '>Sold</option>' +
+    '</select></div>' +
+    '<div class="field"><label>Reserved By (name or email)</label><input type="text" id="ekReservedBy" value="' + (kitten.reserved_by || '') + '" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px"></div>' +
+    '<div class="field"><label>Notes</label><textarea id="ekNotes" rows="2" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px">' + (kitten.notes || '') + '</textarea></div>' +
+    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveKittenBtn">Save Changes</button></div>';
+
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  document.getElementById('saveKittenBtn').onclick = async () => {
+    await api('/admin/kittens/' + kittenId, { method: 'PUT', body: JSON.stringify({
+      name: document.getElementById('ekName').value,
+      color: document.getElementById('ekColor').value,
+      sex: document.getElementById('ekSex').value,
+      price: parseFloat(document.getElementById('ekPrice').value),
+      status: document.getElementById('ekStatus').value,
+      reserved_by: document.getElementById('ekReservedBy').value,
+      notes: document.getElementById('ekNotes').value
+    })});
+    bg.remove();
+    renderApp();
+  };
 }
 
 function showApprovalModal(name, email, password) {
