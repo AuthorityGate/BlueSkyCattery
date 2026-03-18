@@ -189,12 +189,12 @@ function submitContactForm(e) {
         if (result.success) {
             window.location.href = 'thanks.html';
         } else {
-            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            alert('Something went wrong. Please try again or email kittens@blueskycattery.com directly.');
             submitBtn.disabled = false;
             submitBtn.textContent = 'Send Message';
         }
     }).catch(function () {
-        alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
+        alert('Connection error. Please try again or email kittens@blueskycattery.com directly.');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Send Message';
     });
@@ -222,12 +222,12 @@ function submitReserveForm(e) {
         if (result.success) {
             window.location.href = 'thanks.html';
         } else {
-            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            alert('Something went wrong. Please try again or email kittens@blueskycattery.com directly.');
             submitBtn.disabled = false;
             submitBtn.textContent = 'Submit Reservation Request';
         }
     }).catch(function () {
-        alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
+        alert('Connection error. Please try again or email kittens@blueskycattery.com directly.');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Submit Reservation Request';
     });

@@ -544,6 +544,7 @@ async function sendEmail(to, subject, body, toName) {
       },
       body: JSON.stringify({
         sender: { name: 'Blue Sky Cattery', email: 'kittens@blueskycattery.com' },
+        replyTo: { name: 'Blue Sky Cattery', email: 'kittens@reply.blueskycattery.com' },
         to: [{ email: to, name: toName || to }],
         subject: subject,
         textContent: body
@@ -1085,6 +1086,29 @@ export default {
             soldKittens: soldKittens.count
           }
         });
+      }
+
+      // Webhook: Brevo inbound email parsed (replies from adopters)
+      if (path === '/api/webhook/inbound-email' && method === 'POST') {
+        const payload = await parseBody(request);
+        const items = payload.items || [payload];
+        for (const item of items) {
+          const fromEmail = (item.From || item.from || {}).Address || (item.From || item.from || '');
+          const subject = item.Subject || item.subject || 'Reply';
+          const body = item.ExtractedMarkdownMessage || item.RawTextBody || item.rawTextBody || '';
+          if (fromEmail) {
+            // Find the lead by email
+            const lead = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(fromEmail).first();
+            if (lead) {
+              await env.DB.prepare('INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)')
+                .bind(lead.id, 'inbound_reply', subject, body, now()).run();
+            }
+            // Also forward to Deanna so she sees it in Gmail too
+            await sendEmail('Deanna@blueskycattery.com', 'Reply from ' + fromEmail + ': ' + subject,
+              'Reply received from: ' + fromEmail + '\nSubject: ' + subject + '\n\n' + body + '\n\n---\nView in admin portal: https://portal.blueskycattery.com/admin', 'Deanna');
+          }
+        }
+        return json({ success: true });
       }
 
       // PUBLIC: Get active litter kitten statuses (for main website)
