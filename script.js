@@ -69,49 +69,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    // --- Track forms in portal API ---
-    var PORTAL_API = 'https://portal.blueskycattery.com/api';
-
-    // Contact form: send to API before FormSubmit handles it
-    var contactForm = document.getElementById('contactForm');
-    if (contactForm && contactForm.getAttribute('action')) {
-        contactForm.addEventListener('submit', function () {
-            var fd = new FormData(contactForm);
-            var data = {};
-            fd.forEach(function (v, k) { if (!k.startsWith('_')) data[k] = v; });
-            // Fire and forget - don't block the form submission
-            try {
-                navigator.sendBeacon(PORTAL_API + '/contact', JSON.stringify(data));
-            } catch (e) {
-                fetch(PORTAL_API + '/contact', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data),
-                    keepalive: true
-                }).catch(function () {});
-            }
-        });
-    }
-
-    // Reservation form: send to API before FormSubmit handles it
-    var resForm = document.getElementById('reservationForm');
-    if (resForm && resForm.getAttribute('action')) {
-        resForm.addEventListener('submit', function () {
-            var fd = new FormData(resForm);
-            var data = {};
-            fd.forEach(function (v, k) { if (!k.startsWith('_')) data[k] = v; });
-            try {
-                navigator.sendBeacon(PORTAL_API + '/reserve', JSON.stringify(data));
-            } catch (e) {
-                fetch(PORTAL_API + '/reserve', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data),
-                    keepalive: true
-                }).catch(function () {});
-            }
-        });
-    }
 });
 
 
@@ -144,53 +101,7 @@ function closeReservation() {
     document.body.style.overflow = '';
 }
 
-function submitReservation(e) {
-    e.preventDefault();
-    var form = document.getElementById('reservationForm');
-    var success = document.getElementById('formSuccess');
-    var submitBtn = form.querySelector('button[type="submit"]');
-
-    var formData = new FormData(form);
-    formData.append('_subject', 'Kitten Reservation Request - Kitten #' + selectedKitten);
-    formData.append('Kitten', 'Kitten #' + selectedKitten);
-    formData.append('_captcha', 'false');
-    formData.append('_template', 'table');
-
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Sending...';
-
-    fetch('https://formsubmit.co/ajax/Deanna@blueskycattery.com', {
-        method: 'POST',
-        body: formData
-    }).then(function (response) {
-        return response.text();
-    }).then(function (text) {
-        try {
-            var result = JSON.parse(text);
-            if (result.success === 'true' || result.success === true) {
-                form.style.display = 'none';
-                success.style.display = 'block';
-                form.reset();
-            } else {
-                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
-            }
-        } catch (e) {
-            if (text.indexOf('success') !== -1 || text.indexOf('Thank') !== -1) {
-                form.style.display = 'none';
-                success.style.display = 'block';
-                form.reset();
-            } else {
-                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
-            }
-        }
-    }).catch(function (err) {
-        console.error('Form error:', err);
-        alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
-    }).finally(function () {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Submit Reservation Request';
-    });
-}
+// (Old FormSubmit handler removed - using submitReserveForm via portal API now)
 
 // Close modal on overlay click
 document.addEventListener('click', function (e) {
@@ -207,50 +118,71 @@ document.addEventListener('keydown', function (e) {
 });
 
 
-// --- Contact Form ---
-function submitContact(e) {
+// --- Portal API ---
+var PORTAL_API = 'https://portal.blueskycattery.com/api';
+
+// Contact Form - sends to portal API, redirects to thanks page
+function submitContactForm(e) {
     e.preventDefault();
     var form = document.getElementById('contactForm');
-    var success = document.getElementById('contactSuccess');
     var submitBtn = form.querySelector('button[type="submit"]');
-
-    var formData = new FormData(form);
-    formData.append('_subject', 'Blue Sky Cattery - ' + (formData.get('subject') || 'Contact Form'));
-    formData.append('_captcha', 'false');
-    formData.append('_template', 'table');
+    var fd = new FormData(form);
+    var data = {};
+    fd.forEach(function (v, k) { data[k] = v; });
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending...';
 
-    fetch('https://formsubmit.co/ajax/Deanna@blueskycattery.com', {
+    fetch(PORTAL_API + '/contact', {
         method: 'POST',
-        body: formData
-    }).then(function (response) {
-        return response.text();
-    }).then(function (text) {
-        try {
-            var result = JSON.parse(text);
-            if (result.success === 'true' || result.success === true) {
-                form.style.display = 'none';
-                success.style.display = 'block';
-                form.reset();
-            } else {
-                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
-            }
-        } catch (e) {
-            if (text.indexOf('success') !== -1 || text.indexOf('Thank') !== -1) {
-                form.style.display = 'none';
-                success.style.display = 'block';
-                form.reset();
-            } else {
-                alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
-            }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    }).then(function (res) { return res.json(); })
+    .then(function (result) {
+        if (result.success) {
+            window.location.href = 'thanks.html';
+        } else {
+            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Send Message';
         }
-    }).catch(function (err) {
-        console.error('Form error:', err);
+    }).catch(function () {
         alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
-    }).finally(function () {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Send Message';
     });
+    return false;
+}
+
+// Reservation Form - sends to portal API, redirects to thanks page
+function submitReserveForm(e) {
+    e.preventDefault();
+    var form = document.getElementById('reservationForm');
+    var submitBtn = form.querySelector('button[type="submit"]');
+    var fd = new FormData(form);
+    var data = {};
+    fd.forEach(function (v, k) { data[k] = v; });
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending...';
+
+    fetch(PORTAL_API + '/reserve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    }).then(function (res) { return res.json(); })
+    .then(function (result) {
+        if (result.success) {
+            window.location.href = 'thanks.html';
+        } else {
+            alert('Something went wrong. Please try again or email Deanna@blueskycattery.com directly.');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit Reservation Request';
+        }
+    }).catch(function () {
+        alert('Connection error. Please try again or email Deanna@blueskycattery.com directly.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit Reservation Request';
+    });
+    return false;
 }
