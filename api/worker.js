@@ -418,8 +418,8 @@ export default {
         const grading = gradeApplication(data);
 
         await env.DB.prepare(`
-          INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, score, score_breakdown, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, landlord_info, pet_source, pet_health_history, vocal_comfort, adjustment_plan, rehome_circumstances, enrichment_plan, spay_neuter_opinion, financial_readiness, verify_cat_count, verify_home_description, how_found_us, surrender_details, score, score_breakdown, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           session.user_id, data.kitten_preference || null, data.full_name, data.email, data.phone,
           data.city_state, data.housing_type, data.housing_own_rent || null, data.other_pets,
@@ -427,8 +427,17 @@ export default {
           data.work_schedule || null, data.vet_name || null, data.vet_phone || null,
           data.pet_history || null, data.surrender_history || null, data.allergies || null,
           data.timeline || null, data.additional_notes || null,
+          data.landlord_info || null, data.pet_source || null, data.pet_health_history || null,
+          data.vocal_comfort || null, data.adjustment_plan || null, data.rehome_circumstances || null,
+          data.enrichment_plan || null, data.spay_neuter_opinion || null, data.financial_readiness || null,
+          data.verify_cat_count || null, data.verify_home_description || null, data.how_found_us || null,
+          data.surrender_details || null,
           grading.score, JSON.stringify(grading.breakdown), 'submitted', now(), now()
         ).run();
+
+        // Notify admin of new application
+        await sendEmail('Deanna@blueskycattery.com', 'New Application Submitted: ' + data.full_name,
+          'A new adoption application has been submitted.\n\nApplicant: ' + data.full_name + '\nEmail: ' + data.email + '\nScore: ' + grading.score + '/100\n\nReview in admin portal: https://portal.blueskycattery.com/admin', 'Deanna');
 
         return json({ success: true, message: 'Application submitted' });
       }
@@ -1024,22 +1033,16 @@ function showKittenEditModal(kittenId, kitten) {
 }
 
 function showApprovalModal(name, email, password) {
-  const welcomeEmail = 'Dear ' + name + ',\\n\\nThank you for your interest in Blue Sky Cattery! We\\'re excited to invite you to complete our adoption application.\\n\\nYour login credentials:\\nPortal: https://portal.blueskycattery.com\\nEmail: ' + email + '\\nPassword: ' + password + '\\n\\nPlease log in and complete the application at your earliest convenience. We look forward to learning more about you!\\n\\nWarm regards,\\nDeanna\\nBlue Sky Cattery';
-
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) { bg.remove(); renderApp(); }}});
   const modal = el('div', { class: 'modal' });
-  modal.innerHTML = '<h2 style="color:#7A8B6F">Account Created Successfully!</h2>' +
-    '<p style="margin:12px 0">An applicant account has been created for <strong>' + name + '</strong>.</p>' +
+  modal.innerHTML = '<h2 style="color:#7A8B6F">Approved & Welcome Email Sent!</h2>' +
+    '<p style="margin:12px 0">An applicant account has been created for <strong>' + name + '</strong> and a welcome email with login credentials has been sent automatically.</p>' +
     '<div class="field"><label>Email</label><div class="value">' + email + '</div></div>' +
     '<div class="field"><label>Temporary Password</label><div class="value" style="font-family:monospace;font-size:1.1rem;font-weight:700;color:#A0522D;letter-spacing:1px">' + password + '</div></div>' +
     '<div class="field"><label>Portal URL</label><div class="value">https://portal.blueskycattery.com</div></div>' +
-    '<hr style="margin:20px 0;border:none;border-top:1px solid #D4C5A9">' +
-    '<h3 style="margin-bottom:8px">Welcome Email (copy & send from your email)</h3>' +
-    '<textarea id="welcomeEmailText" rows="12" style="width:100%;font-family:inherit;font-size:.88rem;padding:12px;border:1px solid #D4C5A9;border-radius:8px;background:#F5EDE0">' + welcomeEmail + '</textarea>' +
+    '<p style="margin-top:16px;font-size:.85rem;color:#6B5B4B">The applicant received an email with these credentials and a link to the application portal.</p>' +
     '<div class="actions">' +
-    '<button class="btn btn-outline" onclick="navigator.clipboard.writeText(document.getElementById(\\'welcomeEmailText\\').value);this.textContent=\\'Copied!\\';">Copy Email Text</button>' +
-    '<button class="btn btn-primary" onclick="window.open(\\'mailto:' + email + '?subject=Welcome to Blue Sky Cattery - Application Portal Access&body=' + encodeURIComponent(welcomeEmail.replace(/\\\\n/g, '\\n')) + '\\')">Open in Email Client</button>' +
-    '<button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove();renderApp();">Done</button>' +
+    '<button class="btn btn-primary" onclick="this.closest(\\'.modal-bg\\').remove();renderApp();">Close</button>' +
     '</div>';
   bg.appendChild(modal);
   document.body.appendChild(bg);
