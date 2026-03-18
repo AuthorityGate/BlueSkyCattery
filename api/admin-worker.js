@@ -882,17 +882,73 @@ export default {
         const reservedKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'reserved' OR status = 'pending'").first();
         const soldKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'sold'").first();
 
+        // Funnel data
+        const approvedLeads = await env.DB.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'approved'").first();
+        const rejectedApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'rejected'").first();
+        const approvedApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'approved'").first();
+        const waitlistApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'waitlist'").first();
+
+        // Score distribution
+        const scoreRanges = await env.DB.prepare(`
+          SELECT
+            SUM(CASE WHEN score >= 80 THEN 1 ELSE 0 END) as excellent,
+            SUM(CASE WHEN score >= 65 AND score < 80 THEN 1 ELSE 0 END) as good,
+            SUM(CASE WHEN score >= 45 AND score < 65 THEN 1 ELSE 0 END) as fair,
+            SUM(CASE WHEN score < 45 THEN 1 ELSE 0 END) as needs_review
+          FROM applications
+        `).first();
+
+        // Lead sources
+        const sources = await env.DB.prepare(`
+          SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC
+        `).all();
+
+        // Purpose breakdown
+        const purposes = await env.DB.prepare(`
+          SELECT purpose, COUNT(*) as count FROM applications WHERE purpose IS NOT NULL GROUP BY purpose ORDER BY count DESC
+        `).all();
+
+        // Recent activity (last 10 leads and apps)
+        const recentLeads = await env.DB.prepare('SELECT id, name, email, source, status, created_at FROM leads ORDER BY created_at DESC LIMIT 10').all();
+        const recentApps = await env.DB.prepare('SELECT id, full_name, email, score, status, purpose, created_at FROM applications ORDER BY created_at DESC LIMIT 10').all();
+
+        // Email stats
+        let emailsSent = { count: 0 };
+        try { emailsSent = await env.DB.prepare('SELECT COUNT(*) as count FROM email_sent_log').first(); } catch(e) {}
+
         return json({
           stats: {
             totalLeads: totalLeads.count,
             newLeads: newLeads.count,
+            approvedLeads: approvedLeads.count,
             totalApplications: totalApps.count,
             pendingApplications: pendingApps.count,
+            approvedApplications: approvedApps.count,
+            rejectedApplications: rejectedApps.count,
+            waitlistApplications: waitlistApps.count,
             averageScore: Math.round(avgScore.avg || 0),
             availableKittens: availableKittens.count,
             reservedKittens: reservedKittens.count,
-            soldKittens: soldKittens.count
-          }
+            soldKittens: soldKittens.count,
+            emailsSent: emailsSent.count || 0
+          },
+          funnel: {
+            leads: totalLeads.count,
+            approved: approvedLeads.count,
+            applied: totalApps.count,
+            accepted: approvedApps.count,
+            sold: soldKittens.count
+          },
+          scoreDistribution: {
+            excellent: scoreRanges.excellent || 0,
+            good: scoreRanges.good || 0,
+            fair: scoreRanges.fair || 0,
+            needsReview: scoreRanges.needs_review || 0
+          },
+          leadSources: sources.results,
+          purposes: purposes.results,
+          recentLeads: recentLeads.results,
+          recentApps: recentApps.results
         });
       }
 
@@ -1351,12 +1407,19 @@ async function renderApp() {
 // ---- Dashboard ----
 
 async function renderDashboard(container) {
-  const [statsRes, leadsRes] = await Promise.all([api('/admin/stats'), api('/admin/leads')]);
-  const stats = statsRes.stats || {};
-  const recentLeads = (leadsRes.leads || []).slice(0, 5);
+  const data = await api('/admin/stats');
+  const stats = data.stats || {};
+  const funnel = data.funnel || {};
+  const scoreDist = data.scoreDistribution || {};
+  const sources = data.leadSources || [];
+  const purposes = data.purposes || [];
+  const recentLeads = data.recentLeads || [];
+  const recentApps = data.recentApps || [];
 
   const panel = el('div', { class: 'panel active' });
   let html = '<h2 style="margin:20px 0 4px">Dashboard</h2>';
+
+  // --- Top Stats ---
   html += '<div class="stats-grid">';
   html += '<div class="stat-card"><div class="number">' + stats.totalLeads + '</div><div class="label">Total Leads</div></div>';
   html += '<div class="stat-card"><div class="number">' + stats.newLeads + '</div><div class="label">New Leads</div></div>';
@@ -1364,18 +1427,126 @@ async function renderDashboard(container) {
   html += '<div class="stat-card"><div class="number">' + stats.pendingApplications + '</div><div class="label">Pending Review</div></div>';
   html += '<div class="stat-card"><div class="number">' + stats.averageScore + '</div><div class="label">Avg Score</div></div>';
   html += '<div class="stat-card"><div class="number" style="color:#7A8B6F">' + stats.availableKittens + '</div><div class="label">Available</div></div>';
-  html += '<div class="stat-card"><div class="number" style="color:#D4AF37">' + stats.reservedKittens + '</div><div class="label">Reserved/Pending</div></div>';
+  html += '<div class="stat-card"><div class="number" style="color:#D4AF37">' + stats.reservedKittens + '</div><div class="label">Reserved</div></div>';
   html += '<div class="stat-card"><div class="number" style="color:#8B3A3A">' + stats.soldKittens + '</div><div class="label">Sold</div></div>';
   html += '</div>';
 
+  // --- Conversion Funnel ---
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:24px 0">';
+
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:24px;border-radius:12px;border:1px solid rgba(212,197,169,.3);box-shadow:0 6px 20px rgba(62,50,41,.08)">';
+  html += '<h3 style="margin:0 0 16px;font-size:1rem;color:#A0522D">Conversion Funnel</h3>';
+  const funnelSteps = [
+    { label: 'Leads', value: funnel.leads || 0, color: '#87A5B4' },
+    { label: 'Approved to Apply', value: funnel.approved || 0, color: '#7A8B6F' },
+    { label: 'Applications Submitted', value: funnel.applied || 0, color: '#D4AF37' },
+    { label: 'Accepted', value: funnel.accepted || 0, color: '#A0522D' },
+    { label: 'Kittens Sold', value: funnel.sold || 0, color: '#3E3229' }
+  ];
+  const maxFunnel = Math.max(1, funnelSteps[0].value);
+  funnelSteps.forEach((step, i) => {
+    const pct = Math.max(8, Math.round((step.value / maxFunnel) * 100));
+    const convRate = i > 0 && funnelSteps[i-1].value > 0 ? Math.round((step.value / funnelSteps[i-1].value) * 100) : null;
+    html += '<div style="margin-bottom:10px">';
+    html += '<div style="display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:3px"><span style="color:#3E3229;font-weight:600">' + step.label + '</span><span style="color:#6B5B4B">' + step.value + (convRate !== null ? ' <span style=\\"font-size:.72rem;color:#A0522D\\">(' + convRate + '%)</span>' : '') + '</span></div>';
+    html += '<div style="background:#e8e2d8;border-radius:4px;height:24px;overflow:hidden"><div style="background:' + step.color + ';height:24px;border-radius:4px;width:' + pct + '%;transition:width .5s ease;display:flex;align-items:center;justify-content:center"><span style="color:#fff;font-size:.7rem;font-weight:700">' + step.value + '</span></div></div>';
+    html += '</div>';
+  });
+  html += '</div>';
+
+  // --- Score Distribution ---
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:24px;border-radius:12px;border:1px solid rgba(212,197,169,.3);box-shadow:0 6px 20px rgba(62,50,41,.08)">';
+  html += '<h3 style="margin:0 0 16px;font-size:1rem;color:#A0522D">Application Score Distribution</h3>';
+  const totalApps = (scoreDist.excellent || 0) + (scoreDist.good || 0) + (scoreDist.fair || 0) + (scoreDist.needsReview || 0);
+  const scoreItems = [
+    { label: 'Excellent (80+)', value: scoreDist.excellent || 0, color: '#7A8B6F' },
+    { label: 'Good (65-79)', value: scoreDist.good || 0, color: '#87A5B4' },
+    { label: 'Fair (45-64)', value: scoreDist.fair || 0, color: '#D4AF37' },
+    { label: 'Needs Review (<45)', value: scoreDist.needsReview || 0, color: '#8B3A3A' }
+  ];
+  if (totalApps > 0) {
+    html += '<div style="display:flex;height:32px;border-radius:6px;overflow:hidden;margin-bottom:16px">';
+    scoreItems.forEach(s => {
+      const w = Math.round((s.value / totalApps) * 100);
+      if (w > 0) html += '<div style="background:' + s.color + ';width:' + w + '%;display:flex;align-items:center;justify-content:center"><span style="color:#fff;font-size:.7rem;font-weight:700">' + s.value + '</span></div>';
+    });
+    html += '</div>';
+  }
+  scoreItems.forEach(s => {
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><div style="width:14px;height:14px;border-radius:3px;background:' + s.color + '"></div><span style="font-size:.85rem;color:#3E3229">' + s.label + ': <strong>' + s.value + '</strong></span></div>';
+  });
+  if (totalApps === 0) html += '<p style="color:#6B5B4B;font-size:.85rem;text-align:center;padding:20px">No applications yet</p>';
+  html += '</div>';
+  html += '</div>';
+
+  // --- Sources & Purpose row ---
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin:0 0 24px">';
+
+  // Lead Sources
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:20px;border-radius:12px;border:1px solid rgba(212,197,169,.3)">';
+  html += '<h3 style="margin:0 0 12px;font-size:.9rem;color:#A0522D">Lead Sources</h3>';
+  if (sources.length > 0) {
+    sources.forEach(s => {
+      html += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem"><span style="color:#3E3229;text-transform:capitalize">' + (s.source || 'unknown') + '</span><strong>' + s.count + '</strong></div>';
+    });
+  } else {
+    html += '<p style="color:#6B5B4B;font-size:.85rem">No data yet</p>';
+  }
+  html += '</div>';
+
+  // Application Purpose
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:20px;border-radius:12px;border:1px solid rgba(212,197,169,.3)">';
+  html += '<h3 style="margin:0 0 12px;font-size:.9rem;color:#A0522D">Application Purpose</h3>';
+  if (purposes.length > 0) {
+    purposes.forEach(p => {
+      html += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem"><span style="color:#3E3229;text-transform:capitalize">' + (p.purpose || 'pet') + '</span><strong>' + p.count + '</strong></div>';
+    });
+  } else {
+    html += '<p style="color:#6B5B4B;font-size:.85rem">No data yet</p>';
+  }
+  html += '</div>';
+
+  // Quick Stats
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:20px;border-radius:12px;border:1px solid rgba(212,197,169,.3)">';
+  html += '<h3 style="margin:0 0 12px;font-size:.9rem;color:#A0522D">Quick Stats</h3>';
+  html += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem"><span>Waitlisted</span><strong>' + (stats.waitlistApplications || 0) + '</strong></div>';
+  html += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem"><span>Rejected</span><strong>' + (stats.rejectedApplications || 0) + '</strong></div>';
+  html += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem"><span>Emails Sent</span><strong>' + (stats.emailsSent || 0) + '</strong></div>';
+  html += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem"><span>Avg Score</span><strong>' + (stats.averageScore || 0) + '/100</strong></div>';
+  html += '</div>';
+  html += '</div>';
+
+  // --- Recent Activity ---
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">';
+
+  // Recent Leads
+  html += '<div>';
+  html += '<h3 style="margin:0 0 8px;font-size:1rem;color:#6B5B4B">Recent Leads</h3>';
   if (recentLeads.length > 0) {
-    html += '<h3 style="margin:24px 0 8px">Recent Leads</h3>';
-    html += '<table><thead><tr><th>Name</th><th>Email</th><th>Source</th><th>Status</th><th>When</th></tr></thead><tbody>';
-    recentLeads.forEach(l => {
-      html += '<tr><td><strong>' + esc(l.name) + '</strong></td><td>' + esc(l.email) + '</td><td>' + esc(l.source) + '</td><td>' + badge(l.status) + '</td><td>' + timeAgo(l.created_at) + '</td></tr>';
+    html += '<table><thead><tr><th>Name</th><th>Source</th><th>Status</th><th>When</th></tr></thead><tbody>';
+    recentLeads.slice(0, 8).forEach(l => {
+      html += '<tr><td><strong>' + esc(l.name) + '</strong><br><span style="font-size:.75rem;color:#6B5B4B">' + esc(l.email) + '</span></td><td>' + esc(l.source) + '</td><td>' + badge(l.status) + '</td><td>' + timeAgo(l.created_at) + '</td></tr>';
     });
     html += '</tbody></table>';
+  } else {
+    html += '<p style="color:#6B5B4B;font-size:.85rem;padding:12px">No leads yet</p>';
   }
+  html += '</div>';
+
+  // Recent Applications
+  html += '<div>';
+  html += '<h3 style="margin:0 0 8px;font-size:1rem;color:#6B5B4B">Recent Applications</h3>';
+  if (recentApps.length > 0) {
+    html += '<table><thead><tr><th>Name</th><th>Score</th><th>Purpose</th><th>Status</th></tr></thead><tbody>';
+    recentApps.slice(0, 8).forEach(a => {
+      html += '<tr><td><strong>' + esc(a.full_name || 'N/A') + '</strong></td><td>' + scoreEl(a.score) + '</td><td style="text-transform:capitalize">' + (a.purpose || 'pet') + '</td><td>' + badge(a.status) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  } else {
+    html += '<p style="color:#6B5B4B;font-size:.85rem;padding:12px">No applications yet</p>';
+  }
+  html += '</div>';
+  html += '</div>';
 
   panel.innerHTML = html;
   container.appendChild(panel);
