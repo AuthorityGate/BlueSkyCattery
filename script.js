@@ -100,18 +100,20 @@ function submitReservation(e) {
     var success = document.getElementById('formSuccess');
     var submitBtn = form.querySelector('button[type="submit"]');
 
-    // Build form data with kitten info
+    // Build JSON data with kitten info
     var formData = new FormData(form);
-    formData.append('_subject', 'Kitten Reservation Request - Kitten #' + selectedKitten);
-    formData.append('Kitten', 'Kitten #' + selectedKitten);
+    var data = { _subject: 'Kitten Reservation Request - Kitten #' + selectedKitten, Kitten: 'Kitten #' + selectedKitten };
+    formData.forEach(function (value, key) { data[key] = value; });
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending...';
 
-    fetch('https://forms.blueskycattery.com/submit', {
+    fetch('https://formsubmit.co/ajax/Deanna@blueskycattery.com', {
         method: 'POST',
-        body: formData,
-        headers: { 'Accept': 'application/json' }
+        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+    }).then(function (response) {
+        return response.json().then(function (result) { return { ok: result.success === 'true', result: result }; });
     }).then(function (response) {
         if (response.ok) {
             form.style.display = 'none';
@@ -151,15 +153,18 @@ function submitContact(e) {
     var submitBtn = form.querySelector('button[type="submit"]');
 
     var formData = new FormData(form);
-    formData.append('_subject', 'Blue Sky Cattery - ' + (formData.get('subject') || 'Contact Form'));
+    var data = { _subject: 'Blue Sky Cattery - ' + (formData.get('subject') || 'Contact Form') };
+    formData.forEach(function (value, key) { data[key] = value; });
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending...';
 
-    fetch('https://forms.blueskycattery.com/submit', {
+    fetch('https://formsubmit.co/ajax/Deanna@blueskycattery.com', {
         method: 'POST',
-        body: formData,
-        headers: { 'Accept': 'application/json' }
+        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+    }).then(function (response) {
+        return response.json().then(function (result) { return { ok: result.success === 'true', result: result }; });
     }).then(function (response) {
         if (response.ok) {
             form.style.display = 'none';
