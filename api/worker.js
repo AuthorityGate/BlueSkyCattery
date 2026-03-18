@@ -79,152 +79,279 @@ async function validateSession(db, token) {
 // ---- Auto-Grading System ----
 
 function gradeApplication(app) {
-  let score = 0;
-  const breakdown = {};
+  const categories = {};
+  const highlights = [];
+  const risks = [];
 
-  // Housing (max 20)
-  if (app.housing_type === 'house' || app.housing_own_rent === 'own') {
-    score += 20; breakdown.housing = 20;
-  } else if (app.housing_type === 'house-rent' || app.housing_own_rent === 'rent') {
-    score += 12; breakdown.housing = 12;
+  // ============ HOME ENVIRONMENT (max 25) ============
+  let homeScore = 0;
+
+  // Housing type + ownership (max 15)
+  if (app.housing_type === 'house' && app.housing_own_rent === 'own') {
+    homeScore += 15; highlights.push('Owns their own house');
+  } else if (app.housing_type === 'house') {
+    homeScore += 10;
+  } else if (app.housing_type === 'townhouse') {
+    homeScore += 8;
   } else if (app.housing_type === 'apartment') {
-    score += 8; breakdown.housing = 8;
-  } else {
-    score += 5; breakdown.housing = 5;
-  }
-
-  // Indoor only (max 15)
-  if (app.indoor_only === 'yes') {
-    score += 15; breakdown.indoor = 15;
-  } else if (app.indoor_only === 'enclosed') {
-    score += 12; breakdown.indoor = 12;
-  } else {
-    score += 0; breakdown.indoor = 0;
-  }
-
-  // Other pets - having a companion cat is ideal (max 20)
-  const pets = (app.other_pets || '').toLowerCase();
-  if (pets.includes('cat') || pets.includes('kitten') || pets.includes('oriental') || pets.includes('siamese')) {
-    score += 20; breakdown.companion = 20;
-  } else if (pets.includes('getting') || pets.includes('plan') || pets.includes('will get') || pets.includes('two')) {
-    score += 15; breakdown.companion = 15;
-  } else if (pets.includes('dog')) {
-    score += 10; breakdown.companion = 10;
-  } else if (pets.includes('no') || pets.includes('none')) {
-    score += 3; breakdown.companion = 3;
-  } else {
-    score += 8; breakdown.companion = 8;
-  }
-
-  // Experience (max 15)
-  const exp = (app.cat_experience || '').toLowerCase();
-  if (exp.includes('oriental') || exp.includes('siamese') || exp.includes('breeder')) {
-    score += 15; breakdown.experience = 15;
-  } else if (exp.includes('cat') || exp.includes('years') || exp.includes('always')) {
-    score += 10; breakdown.experience = 10;
-  } else if (exp.includes('first') || exp.includes('new') || exp.includes('never')) {
-    score += 3; breakdown.experience = 3;
-  } else {
-    score += 6; breakdown.experience = 6;
-  }
-
-  // Why interested - looking for passion (max 15)
-  const why = (app.why_oriental || '').toLowerCase();
-  const passionWords = ['love', 'personality', 'intelligent', 'companion', 'family', 'bond', 'research', 'dream', 'passion', 'years', 'always wanted'];
-  const passionCount = passionWords.filter(w => why.includes(w)).length;
-  if (passionCount >= 3) { score += 15; breakdown.motivation = 15; }
-  else if (passionCount >= 1) { score += 10; breakdown.motivation = 10; }
-  else if (why.length > 50) { score += 7; breakdown.motivation = 7; }
-  else { score += 3; breakdown.motivation = 3; }
-
-  // Vet info provided (max 10)
-  if (app.vet_name && app.vet_phone) {
-    score += 10; breakdown.vet = 10;
-  } else if (app.vet_name || app.vet_phone) {
-    score += 5; breakdown.vet = 5;
-  } else {
-    score += 0; breakdown.vet = 0;
-  }
-
-  // Work schedule - home presence (max 5)
-  const work = (app.work_schedule || '').toLowerCase();
-  if (work.includes('home') || work.includes('remote') || work.includes('wfh') || work.includes('retired')) {
-    score += 5; breakdown.schedule = 5;
-  } else if (work.includes('part')) {
-    score += 3; breakdown.schedule = 3;
-  } else {
-    score += 1; breakdown.schedule = 1;
-  }
-
-  // Enrichment plan (max 5)
-  const enrich = (app.enrichment_plan || '').toLowerCase();
-  if (enrich.includes('tree') || enrich.includes('toy') || enrich.includes('play')) {
-    score += 5; breakdown.enrichment = 5;
-  } else if (enrich.length > 20) {
-    score += 3; breakdown.enrichment = 3;
-  } else {
-    score += 1; breakdown.enrichment = 1;
-  }
-
-  // Spay/neuter agreement (max 5)
-  const spay = (app.spay_neuter_opinion || '').toLowerCase();
-  if (spay.includes('agree') || spay.includes('absolutely') || spay.includes('support') || spay.includes('of course') || spay.includes('no problem')) {
-    score += 5; breakdown.spay_neuter = 5;
-  } else if (spay.includes('understand') || spay.includes('fine')) {
-    score += 3; breakdown.spay_neuter = 3;
-  } else {
-    score += 0; breakdown.spay_neuter = 0;
-  }
-
-  // Rehome circumstances - red flag detection (deduct up to -10)
-  const rehome = (app.rehome_circumstances || '').toLowerCase();
-  if (rehome.includes('never') || rehome.includes('no circumstance') || rehome.includes('would not') || rehome.includes('not an option')) {
-    score += 5; breakdown.commitment = 5;
-  } else if (rehome.includes('last resort') || rehome.includes('only if')) {
-    score += 2; breakdown.commitment = 2;
-  } else if (rehome.length > 0) {
-    score -= 5; breakdown.commitment = -5;
-  } else {
-    score += 0; breakdown.commitment = 0;
-  }
-
-  // Consistency check: verify_cat_count vs other_pets (flag only, no score deduction)
-  const catCount = (app.verify_cat_count || '').toLowerCase();
-  const petsDesc = (app.other_pets || '').toLowerCase();
-  let consistencyFlag = 'consistent';
-  if (catCount === '0' || catCount === 'none' || catCount === 'zero') {
-    if (petsDesc.includes('cat') || petsDesc.includes('kitten')) {
-      consistencyFlag = 'INCONSISTENT - claims 0 cats but mentioned cats in pets section';
-      score -= 10; breakdown.consistency = -10;
-    } else {
-      breakdown.consistency = 0;
+    homeScore += 5;
+    if (app.housing_own_rent === 'rent' && !app.landlord_info) {
+      risks.push('Rents apartment - no landlord verification provided');
     }
   } else {
-    breakdown.consistency = 0;
+    homeScore += 3;
   }
-  breakdown.consistency_note = consistencyFlag;
 
-  // Surrender history - flag (deduct if yes but no explanation)
-  if (app.surrender_history === 'yes' && (!app.surrender_details || app.surrender_details.length < 20)) {
-    score -= 5; breakdown.surrender_flag = -5;
+  // Landlord info if renting (bonus 3)
+  if (app.housing_own_rent === 'rent' && app.landlord_info && app.landlord_info.length > 10) {
+    homeScore += 3; highlights.push('Provided landlord contact for pet verification');
+  }
+
+  // Indoor only (max 7)
+  if (app.indoor_only === 'yes') {
+    homeScore += 7;
+  } else if (app.indoor_only === 'enclosed') {
+    homeScore += 5; highlights.push('Has enclosed outdoor access (catio)');
   } else {
-    breakdown.surrender_flag = 0;
+    homeScore += 0; risks.push('Plans outdoor access - Orientals must be indoor only');
   }
 
-  // Adjustment plan quality (max 5)
+  categories.home = { score: homeScore, max: 25, label: 'Home Environment' };
+
+  // ============ COMPANION & PETS (max 20) ============
+  let companionScore = 0;
+  const pets = (app.other_pets || '').toLowerCase();
+  const petSource = (app.pet_source || '').toLowerCase();
+
+  if (pets.includes('oriental') || pets.includes('siamese')) {
+    companionScore += 20; highlights.push('Already has Oriental/Siamese companion');
+  } else if (pets.includes('cat') || pets.includes('kitten')) {
+    companionScore += 15; highlights.push('Has existing cat companion');
+  } else if (pets.includes('getting') || pets.includes('plan') || pets.includes('will get') || pets.includes('two kittens') || pets.includes('pair')) {
+    companionScore += 13; highlights.push('Plans to get companion cat');
+  } else if (pets.includes('dog')) {
+    companionScore += 7;
+  } else if (pets.includes('no') || pets.includes('none') || pets.length < 5) {
+    companionScore += 0; risks.push('No companion cat - Orientals require a feline companion');
+  } else {
+    companionScore += 5;
+  }
+
+  // Bonus for reputable pet sources
+  if (petSource.includes('breeder') || petSource.includes('rescue') || petSource.includes('shelter')) {
+    companionScore = Math.min(companionScore + 2, 20);
+  }
+
+  categories.companion = { score: companionScore, max: 20, label: 'Companion & Pets' };
+
+  // ============ EXPERIENCE & KNOWLEDGE (max 20) ============
+  let expScore = 0;
+  const exp = (app.cat_experience || '').toLowerCase();
+  const why = (app.why_oriental || '').toLowerCase();
+  const vocal = (app.vocal_comfort || '').toLowerCase();
+
+  // Cat experience (max 10)
+  if (exp.includes('oriental') || exp.includes('siamese') || exp.includes('breeder') || exp.includes('show')) {
+    expScore += 10; highlights.push('Experience with Oriental/Siamese breeds');
+  } else if ((exp.includes('cat') || exp.includes('years')) && exp.length > 30) {
+    expScore += 7;
+  } else if (exp.includes('first') || exp.includes('new') || exp.includes('never')) {
+    expScore += 2; risks.push('First-time cat owner');
+  } else {
+    expScore += 4;
+  }
+
+  // Breed knowledge / motivation (max 7)
+  const knowledgeWords = ['personality', 'intelligent', 'vocal', 'companion', 'bond', 'research', 'active', 'social', 'honk', 'dog-like', 'follow', 'attention'];
+  const knowledgeCount = knowledgeWords.filter(w => why.includes(w)).length;
+  if (knowledgeCount >= 4) { expScore += 7; highlights.push('Demonstrates strong breed knowledge'); }
+  else if (knowledgeCount >= 2) { expScore += 5; }
+  else if (why.length > 50) { expScore += 3; }
+  else { expScore += 1; }
+
+  // Vocal comfort (max 3)
+  if (vocal.includes('love') || vocal.includes('enjoy') || vocal.includes('excited') || vocal.includes('great') || vocal.includes('hilarious')) {
+    expScore += 3; highlights.push('Enthusiastic about vocal personality');
+  } else if (vocal.includes('fine') || vocal.includes('ok') || vocal.includes('handle')) {
+    expScore += 2;
+  } else if (vocal.includes('concern') || vocal.includes('worry') || vocal.includes('loud') || vocal.includes('annoying')) {
+    expScore += 0; risks.push('Expressed concern about vocality');
+  } else {
+    expScore += 1;
+  }
+
+  categories.experience = { score: expScore, max: 20, label: 'Experience & Knowledge' };
+
+  // ============ COMMITMENT & READINESS (max 20) ============
+  let commitScore = 0;
   const adjust = (app.adjustment_plan || '').toLowerCase();
-  if (adjust.includes('patience') || adjust.includes('time') || adjust.includes('vet') || adjust.includes('work with')) {
-    score += 5; breakdown.adjustment = 5;
+  const rehome = (app.rehome_circumstances || '').toLowerCase();
+  const spay = (app.spay_neuter_opinion || '').toLowerCase();
+  const enrich = (app.enrichment_plan || '').toLowerCase();
+  const finance = (app.financial_readiness || '').toLowerCase();
+
+  // Adjustment plan (max 5)
+  if (adjust.includes('patience') || adjust.includes('time') || adjust.includes('vet') || adjust.includes('work with') || adjust.includes('behaviorist')) {
+    commitScore += 5; highlights.push('Thoughtful adjustment plan');
   } else if (adjust.length > 30) {
-    score += 3; breakdown.adjustment = 3;
+    commitScore += 3;
   } else {
-    score += 0; breakdown.adjustment = 0;
+    commitScore += 0;
   }
 
-  // Cap score at 0-100
-  score = Math.max(0, Math.min(100, score));
+  // Rehome circumstances (max 5)
+  if (rehome.includes('never') || rehome.includes('no circumstance') || rehome.includes('would not') || rehome.includes('not an option') || rehome.includes('lifetime')) {
+    commitScore += 5; highlights.push('Committed to lifetime ownership');
+  } else if (rehome.includes('last resort') || rehome.includes('only if') || rehome.includes('breeder first')) {
+    commitScore += 3;
+  } else if (rehome.length > 10) {
+    commitScore += 0; risks.push('Listed circumstances for rehoming');
+  } else {
+    commitScore += 1;
+  }
 
-  return { score, breakdown, maxScore: 100 };
+  // Spay/neuter agreement (max 3)
+  if (app.purpose === 'pet') {
+    if (spay.includes('agree') || spay.includes('absolutely') || spay.includes('support') || spay.includes('of course') || spay.includes('no problem') || spay.includes('plan to')) {
+      commitScore += 3;
+    } else if (spay.includes('understand') || spay.includes('fine')) {
+      commitScore += 2;
+    } else if (spay.includes('disagree') || spay.includes('against') || spay.includes('don\'t want')) {
+      commitScore += 0; risks.push('Resistant to spay/neuter requirement');
+    } else {
+      commitScore += 1;
+    }
+  } else {
+    commitScore += 2; // breeding/show - spay not applicable
+  }
+
+  // Enrichment plan (max 4)
+  const enrichWords = ['tree', 'toys', 'play', 'climb', 'puzzle', 'feather', 'interactive', 'scratch', 'perch', 'window'];
+  const enrichCount = enrichWords.filter(w => enrich.includes(w)).length;
+  if (enrichCount >= 3) { commitScore += 4; highlights.push('Detailed enrichment plan'); }
+  else if (enrichCount >= 1) { commitScore += 2; }
+  else if (enrich.length > 20) { commitScore += 1; }
+  else { commitScore += 0; risks.push('No enrichment plan provided'); }
+
+  // Financial readiness (max 3)
+  if (finance.includes('yes') || finance.includes('prepared') || finance.includes('budget') || finance.match(/\$?\d{3,}/)) {
+    commitScore += 3;
+  } else if (finance.length > 10) {
+    commitScore += 2;
+  } else {
+    commitScore += 0;
+  }
+
+  categories.commitment = { score: commitScore, max: 20, label: 'Commitment & Readiness' };
+
+  // ============ VETERINARY & RESPONSIBILITY (max 10) ============
+  let vetScore = 0;
+
+  if (app.vet_name && app.vet_phone) {
+    vetScore += 8; highlights.push('Provided veterinarian reference');
+  } else if (app.vet_name || app.vet_phone) {
+    vetScore += 4;
+  } else {
+    vetScore += 0; risks.push('No veterinarian information provided');
+  }
+
+  // Pet health history transparency
+  if (app.pet_health_history && app.pet_health_history.length > 20) {
+    vetScore += 2; highlights.push('Transparent about pet health history');
+  }
+
+  categories.veterinary = { score: Math.min(vetScore, 10), max: 10, label: 'Veterinary & Responsibility' };
+
+  // ============ SCHEDULE & LIFESTYLE (max 5) ============
+  let schedScore = 0;
+  const work = (app.work_schedule || '').toLowerCase();
+
+  if (work.includes('home') || work.includes('remote') || work.includes('wfh') || work.includes('retired') || work.includes('stay at home')) {
+    schedScore += 5; highlights.push('Home most of the day');
+  } else if (work.includes('part') || work.includes('flexible') || work.includes('hybrid')) {
+    schedScore += 3;
+  } else if (work.includes('8') || work.includes('9-5') || work.includes('full time') || work.includes('office')) {
+    schedScore += 1; risks.push('Full-time away from home');
+  } else {
+    schedScore += 2;
+  }
+
+  categories.schedule = { score: schedScore, max: 5, label: 'Schedule & Lifestyle' };
+
+  // ============ DECEPTION DETECTION (penalties only) ============
+  let deceptionPenalty = 0;
+  const deceptionFlags = [];
+
+  // Consistency: cat count vs pet description
+  const catCount = (app.verify_cat_count || '').toLowerCase().trim();
+  const petsDesc = (app.other_pets || '').toLowerCase();
+  if ((catCount === '0' || catCount === 'none' || catCount === 'zero' || catCount === 'no') &&
+      (petsDesc.includes('cat') || petsDesc.includes('kitten'))) {
+    deceptionPenalty += 10;
+    deceptionFlags.push('INCONSISTENT: Claims 0 cats but mentioned cats in pet description');
+    risks.push('Inconsistent answers about cat ownership');
+  }
+  if ((catCount === '1' || catCount === '2' || catCount === '3') &&
+      (petsDesc.includes('no') || petsDesc.includes('none')) && !petsDesc.includes('dog')) {
+    deceptionPenalty += 10;
+    deceptionFlags.push('INCONSISTENT: Claims cats in verification but said no pets earlier');
+    risks.push('Inconsistent answers about pet ownership');
+  }
+
+  // Consistency: home description vs housing type
+  const homeDesc = (app.verify_home_description || '').toLowerCase();
+  if (app.housing_type === 'house' && (homeDesc.includes('apartment') || homeDesc.includes('studio') || homeDesc.includes('small unit'))) {
+    deceptionPenalty += 8;
+    deceptionFlags.push('INCONSISTENT: Selected house but describes apartment-like space');
+    risks.push('Housing description contradicts selection');
+  }
+
+  // Surrender history: said no but details suggest otherwise
+  if (app.surrender_history === 'no' && app.pet_history) {
+    const history = app.pet_history.toLowerCase();
+    if (history.includes('rehome') || history.includes('gave away') || history.includes('returned') || history.includes('had to give') || history.includes('found a home for')) {
+      deceptionPenalty += 8;
+      deceptionFlags.push('INCONSISTENT: Denied rehoming but pet history suggests otherwise');
+      risks.push('Possible undisclosed pet rehoming');
+    }
+  }
+
+  // Surrender said yes but no explanation
+  if (app.surrender_history === 'yes' && (!app.surrender_details || app.surrender_details.length < 20)) {
+    deceptionPenalty += 5;
+    deceptionFlags.push('Admitted rehoming but provided no meaningful explanation');
+    risks.push('Admitted surrendering pet - insufficient explanation');
+  }
+
+  categories.deception = { score: -deceptionPenalty, max: 0, label: 'Consistency Check', flags: deceptionFlags };
+
+  // ============ CALCULATE TOTAL ============
+  let totalScore = 0;
+  let totalMax = 0;
+  Object.values(categories).forEach(cat => {
+    if (cat.max > 0) { totalScore += cat.score; totalMax += cat.max; }
+    else { totalScore += cat.score; } // penalties
+  });
+
+  totalScore = Math.max(0, Math.min(100, totalScore));
+
+  // ============ PURPOSE-SPECIFIC FLAGS ============
+  if (app.purpose === 'breeding') {
+    highlights.push('Requesting breeding rights - requires additional screening');
+    risks.push('Breeding applicant - verify breeding program credentials');
+  }
+  if (app.purpose === 'show') {
+    highlights.push('Show home applicant - verify show experience');
+  }
+
+  return {
+    score: totalScore,
+    categories,
+    highlights,
+    risks,
+    maxScore: 100,
+    grade: totalScore >= 80 ? 'Excellent' : totalScore >= 65 ? 'Good' : totalScore >= 45 ? 'Fair' : 'Needs Review'
+  };
 }
 
 // ---- Email Sending (via MailChannels or FormSubmit) ----
@@ -418,8 +545,8 @@ export default {
         const grading = gradeApplication(data);
 
         await env.DB.prepare(`
-          INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, landlord_info, pet_source, pet_health_history, vocal_comfort, adjustment_plan, rehome_circumstances, enrichment_plan, spay_neuter_opinion, financial_readiness, verify_cat_count, verify_home_description, how_found_us, surrender_details, score, score_breakdown, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO applications (user_id, kitten_preference, full_name, email, phone, city_state, housing_type, housing_own_rent, other_pets, cat_experience, why_oriental, indoor_only, household_members, work_schedule, vet_name, vet_phone, pet_history, surrender_history, allergies, timeline, additional_notes, landlord_info, pet_source, pet_health_history, vocal_comfort, adjustment_plan, rehome_circumstances, enrichment_plan, spay_neuter_opinion, financial_readiness, verify_cat_count, verify_home_description, how_found_us, surrender_details, kitten_primary, kitten_backup1, kitten_backup2, sex_preference, purpose, highlights, risks, score, score_breakdown, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           session.user_id, data.kitten_preference || null, data.full_name, data.email, data.phone,
           data.city_state, data.housing_type, data.housing_own_rent || null, data.other_pets,
@@ -432,7 +559,10 @@ export default {
           data.enrichment_plan || null, data.spay_neuter_opinion || null, data.financial_readiness || null,
           data.verify_cat_count || null, data.verify_home_description || null, data.how_found_us || null,
           data.surrender_details || null,
-          grading.score, JSON.stringify(grading.breakdown), 'submitted', now(), now()
+          data.kitten_primary || null, data.kitten_backup1 || null, data.kitten_backup2 || null,
+          data.sex_preference || null, data.purpose || 'pet',
+          JSON.stringify(grading.highlights), JSON.stringify(grading.risks),
+          grading.score, JSON.stringify(grading.categories), 'submitted', now(), now()
         ).run();
 
         // Notify admin of new application
@@ -595,6 +725,45 @@ export default {
           ).bind(litterId, i, 'Kitten #' + i, 'TBD', 'available', 1800, now(), now()).run();
         }
         return json({ success: true, litter_id: litterId, litter_code: code });
+      }
+
+      // Admin: Top candidates per kitten
+      if (path === '/api/admin/candidates' && method === 'GET') {
+        const session = await validateSession(env.DB, token);
+        if (!session || session.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+
+        // Get all active kittens
+        const litter = await env.DB.prepare("SELECT * FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
+        if (!litter) return json({ candidates: {} });
+        const kittens = await env.DB.prepare('SELECT * FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
+
+        const candidates = {};
+        for (const kitten of kittens.results) {
+          const label = kitten.name || 'Kitten #' + kitten.number;
+          // Find apps where this kitten is primary, backup1, or backup2
+          const apps = await env.DB.prepare(`
+            SELECT id, full_name, email, score, purpose, sex_preference, kitten_primary, kitten_backup1, kitten_backup2, status, highlights, risks
+            FROM applications
+            WHERE kitten_primary = ? OR kitten_backup1 = ? OR kitten_backup2 = ?
+            ORDER BY score DESC
+          `).bind(label, label, label).all();
+
+          candidates[label] = apps.results.map(a => ({
+            ...a,
+            preference: a.kitten_primary === label ? 'Primary' : a.kitten_backup1 === label ? 'Backup 1' : 'Backup 2'
+          }));
+        }
+
+        // Also get "any" / sex-preference-only applicants
+        const sexOnly = await env.DB.prepare(`
+          SELECT id, full_name, email, score, purpose, sex_preference, kitten_primary, status, highlights, risks
+          FROM applications
+          WHERE (kitten_primary IS NULL OR kitten_primary = '' OR kitten_primary = 'No preference')
+          ORDER BY score DESC
+        `).all();
+        candidates['No Specific Preference'] = sexOnly.results;
+
+        return json({ candidates, litter_code: litter.litter_code });
       }
 
       // Admin: Dashboard stats
@@ -921,16 +1090,49 @@ async function showLeadModal(leadId) {
 }
 
 async function renderApplications(container) {
-  const { applications } = await api('/admin/applications');
+  const [appsRes, candsRes] = await Promise.all([api('/admin/applications'), api('/admin/candidates')]);
+  const applications = appsRes.applications || [];
+  const candidates = candsRes.candidates || {};
   const panel = el('div', { class: 'panel active' });
-  panel.innerHTML = '<h2 style="margin:20px 0 12px">Applications</h2>';
+
+  // Top Candidates per Kitten
+  if (Object.keys(candidates).length > 0) {
+    let candsHtml = '<h2 style="margin:20px 0 12px">Top Candidates by Kitten</h2>';
+    Object.entries(candidates).forEach(([kittenName, apps]) => {
+      candsHtml += '<div style="margin-bottom:20px;padding:16px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px">';
+      candsHtml += '<h4 style="margin-bottom:8px;color:#A0522D">' + kittenName + ' <span style="font-size:.8rem;font-weight:400;color:#6B5B4B">(' + apps.length + ' applicant' + (apps.length !== 1 ? 's' : '') + ')</span></h4>';
+      if (apps.length === 0) {
+        candsHtml += '<p style="font-size:.85rem;color:#6B5B4B">No applicants yet</p>';
+      } else {
+        candsHtml += '<table style="margin:0"><thead><tr><th>Rank</th><th>Name</th><th>Score</th><th>Preference</th><th>Purpose</th><th>Status</th></tr></thead><tbody>';
+        apps.forEach((a, i) => {
+          const prefColor = a.preference === 'Primary' ? '#7A8B6F' : a.preference === 'Backup 1' ? '#D4AF37' : '#87A5B4';
+          candsHtml += '<tr><td><strong>' + (i+1) + '</strong></td><td>' + (a.full_name||'N/A') + '</td><td>' + scoreEl(a.score) + '</td>';
+          candsHtml += '<td><span style="padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:' + prefColor + ';color:#fff">' + a.preference + '</span></td>';
+          candsHtml += '<td>' + (a.purpose || 'Pet') + '</td><td>' + badge(a.status) + '</td></tr>';
+        });
+        candsHtml += '</tbody></table>';
+      }
+      candsHtml += '</div>';
+    });
+    panel.innerHTML = candsHtml;
+  }
+
+  // All Applications
+  panel.innerHTML += '<h2 style="margin:20px 0 12px">All Applications</h2>';
 
   const table = el('table');
-  table.innerHTML = '<thead><tr><th>Applicant</th><th>Email</th><th>Score</th><th>Status</th><th>Submitted</th><th>Actions</th></tr></thead>';
+  table.innerHTML = '<thead><tr><th>Applicant</th><th>Score</th><th>Purpose</th><th>Primary Kitten</th><th>Sex Pref</th><th>Status</th><th>Submitted</th><th>Actions</th></tr></thead>';
   const tbody = el('tbody');
   (applications || []).forEach(app => {
     const tr = el('tr');
-    tr.innerHTML = '<td><strong>' + (app.full_name||'N/A') + '</strong></td><td>' + (app.user_email||app.email||'') + '</td><td>' + scoreEl(app.score) + '</td><td>' + badge(app.status) + '</td><td>' + timeAgo(app.created_at) + '</td>';
+    tr.innerHTML = '<td><strong>' + (app.full_name||'N/A') + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + (app.user_email||app.email||'') + '</span></td>';
+    tr.innerHTML += '<td>' + scoreEl(app.score) + '</td>';
+    tr.innerHTML += '<td>' + (app.purpose || 'Pet') + '</td>';
+    tr.innerHTML += '<td>' + (app.kitten_primary || '—') + '</td>';
+    tr.innerHTML += '<td>' + (app.sex_preference || '—') + '</td>';
+    tr.innerHTML += '<td>' + badge(app.status) + '</td>';
+    tr.innerHTML += '<td>' + timeAgo(app.created_at) + '</td>';
     const actionTd = el('td');
     actionTd.appendChild(el('button', { class: 'btn btn-outline btn-sm', onclick: () => showAppModal(app.id) }, 'Review'));
     tr.appendChild(actionTd);
@@ -938,7 +1140,7 @@ async function renderApplications(container) {
   });
   table.appendChild(tbody);
   panel.appendChild(table);
-  if (!applications || applications.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No applications yet.</p>';
+  if (applications.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No applications yet.</p>';
   container.appendChild(panel);
 }
 
@@ -1051,33 +1253,94 @@ function showApprovalModal(name, email, password) {
 async function showAppModal(appId) {
   const { application: app } = await api('/admin/applications/' + appId);
   if (!app) return;
-  const breakdown = app.score_breakdown ? JSON.parse(app.score_breakdown) : {};
+  const cats = app.score_breakdown ? JSON.parse(app.score_breakdown) : {};
+  const appHighlights = app.highlights ? JSON.parse(app.highlights) : [];
+  const appRisks = app.risks ? JSON.parse(app.risks) : [];
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
   const modal = el('div', { class: 'modal' });
 
-  const fields = [
-    ['Full Name', app.full_name], ['Email', app.email], ['Phone', app.phone],
-    ['City/State', app.city_state], ['Housing Type', app.housing_type],
-    ['Kitten Preference', app.kitten_preference], ['Other Pets', app.other_pets],
-    ['Cat Experience', app.cat_experience], ['Why Oriental', app.why_oriental],
-    ['Indoor Only', app.indoor_only], ['Household Members', app.household_members],
-    ['Work Schedule', app.work_schedule], ['Vet Name', app.vet_name],
-    ['Vet Phone', app.vet_phone], ['Pet History', app.pet_history],
-    ['Surrender History', app.surrender_history], ['Allergies', app.allergies],
-    ['Timeline', app.timeline], ['Additional Notes', app.additional_notes]
-  ];
+  const gradeColor = app.score >= 80 ? '#7A8B6F' : app.score >= 65 ? '#D4AF37' : app.score >= 45 ? '#A0522D' : '#8B3A3A';
+  const gradeLabel = app.score >= 80 ? 'Excellent' : app.score >= 65 ? 'Good' : app.score >= 45 ? 'Fair' : 'Needs Review';
 
   let html = '<h2>Application Review</h2>';
-  html += '<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">' + scoreEl(app.score) + '<div><strong>Score: ' + app.score + '/100</strong><br>Status: ' + badge(app.status) + '</div></div>';
-  html += '<h3 style="margin:12px 0 8px">Score Breakdown</h3><div class="score-detail">';
-  Object.entries(breakdown).forEach(([k, v]) => { html += '<div class="score-item"><span>' + k + '</span><strong>' + v + '</strong></div>'; });
-  html += '</div><h3 style="margin:16px 0 8px">Application Details</h3>';
-  fields.forEach(([label, val]) => {
-    if (val) html += '<div class="field"><label>' + label + '</label><div class="value">' + val + '</div></div>';
+
+  // Score header
+  html += '<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;padding:16px;background:#F5EDE0;border-radius:12px">';
+  html += scoreEl(app.score);
+  html += '<div><strong style="font-size:1.1rem">' + (app.full_name||'N/A') + '</strong><br>';
+  html += '<span style="color:' + gradeColor + ';font-weight:700">' + gradeLabel + '</span> &mdash; ' + app.score + '/100<br>';
+  html += 'Purpose: <strong>' + (app.purpose || 'Pet') + '</strong> | Status: ' + badge(app.status);
+  html += '</div></div>';
+
+  // Kitten preferences
+  if (app.kitten_primary || app.sex_preference) {
+    html += '<div style="padding:12px 16px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:16px">';
+    html += '<strong style="font-size:.82rem;text-transform:uppercase;letter-spacing:1px;color:#A0522D">Kitten Preferences</strong><br>';
+    if (app.kitten_primary) html += 'Primary: <strong>' + app.kitten_primary + '</strong> ';
+    if (app.kitten_backup1) html += '| Backup 1: ' + app.kitten_backup1 + ' ';
+    if (app.kitten_backup2) html += '| Backup 2: ' + app.kitten_backup2 + ' ';
+    if (app.sex_preference) html += '| Sex preference: <strong>' + app.sex_preference + '</strong>';
+    html += '</div>';
+  }
+
+  // Highlights
+  if (appHighlights.length > 0) {
+    html += '<div style="padding:12px 16px;background:rgba(122,139,111,.08);border:1px solid rgba(122,139,111,.2);border-radius:8px;margin-bottom:12px">';
+    html += '<strong style="color:#7A8B6F;font-size:.82rem;text-transform:uppercase;letter-spacing:1px">Highlights</strong><ul style="margin:6px 0 0 16px;font-size:.88rem">';
+    appHighlights.forEach(h => { html += '<li style="color:#5A6B4F">' + h + '</li>'; });
+    html += '</ul></div>';
+  }
+
+  // Risks
+  if (appRisks.length > 0) {
+    html += '<div style="padding:12px 16px;background:rgba(139,58,58,.05);border:1px solid rgba(139,58,58,.15);border-radius:8px;margin-bottom:12px">';
+    html += '<strong style="color:#8B3A3A;font-size:.82rem;text-transform:uppercase;letter-spacing:1px">Detected Risks</strong><ul style="margin:6px 0 0 16px;font-size:.88rem">';
+    appRisks.forEach(r => { html += '<li style="color:#6E2828">' + r + '</li>'; });
+    html += '</ul></div>';
+  }
+
+  // Category breakdown
+  html += '<h3 style="margin:16px 0 8px">Score Breakdown by Category</h3><div class="score-detail">';
+  Object.entries(cats).forEach(([key, cat]) => {
+    if (typeof cat === 'object' && cat.label) {
+      const pct = cat.max > 0 ? Math.round((cat.score / cat.max) * 100) : 0;
+      const barColor = cat.score < 0 ? '#8B3A3A' : pct >= 70 ? '#7A8B6F' : pct >= 40 ? '#D4AF37' : '#A0522D';
+      html += '<div class="score-item" style="flex-direction:column;align-items:stretch">';
+      html += '<div style="display:flex;justify-content:space-between"><span>' + cat.label + '</span><strong>' + cat.score + '/' + cat.max + '</strong></div>';
+      if (cat.max > 0) {
+        html += '<div style="background:#e8e2d8;border-radius:3px;height:6px;margin-top:4px"><div style="background:' + barColor + ';height:6px;border-radius:3px;width:' + pct + '%"></div></div>';
+      }
+      if (cat.flags && cat.flags.length > 0) {
+        cat.flags.forEach(f => { html += '<div style="font-size:.78rem;color:#8B3A3A;margin-top:4px">&#9888; ' + f + '</div>'; });
+      }
+      html += '</div>';
+    }
+  });
+  html += '</div>';
+
+  // Full application details
+  const sections = [
+    { title: 'Personal', fields: [['Full Name', app.full_name], ['Email', app.email], ['Phone', app.phone], ['City/State', app.city_state]] },
+    { title: 'Home', fields: [['Housing', app.housing_type], ['Own/Rent', app.housing_own_rent], ['Landlord Info', app.landlord_info], ['Household', app.household_members], ['Schedule', app.work_schedule], ['Allergies', app.allergies]] },
+    { title: 'Pets', fields: [['Current Pets', app.other_pets], ['Pet Source', app.pet_source], ['Pet History', app.pet_history], ['Health History', app.pet_health_history], ['Surrendered?', app.surrender_history], ['Surrender Details', app.surrender_details]] },
+    { title: 'Knowledge', fields: [['Experience', app.cat_experience], ['Why Oriental', app.why_oriental], ['Vocal Comfort', app.vocal_comfort], ['Adjustment Plan', app.adjustment_plan], ['Rehome Circumstances', app.rehome_circumstances]] },
+    { title: 'Readiness', fields: [['Enrichment Plan', app.enrichment_plan], ['Indoor Only', app.indoor_only], ['Spay/Neuter', app.spay_neuter_opinion], ['Financial', app.financial_readiness]] },
+    { title: 'Vet & Other', fields: [['Vet Name', app.vet_name], ['Vet Phone', app.vet_phone], ['How Found Us', app.how_found_us], ['Timeline', app.timeline], ['Notes', app.additional_notes]] },
+    { title: 'Verification', fields: [['Cat Count', app.verify_cat_count], ['Home Description', app.verify_home_description]] }
+  ];
+
+  sections.forEach(sec => {
+    const hasData = sec.fields.some(([,v]) => v);
+    if (!hasData) return;
+    html += '<h3 style="margin:16px 0 8px;font-size:.95rem;color:#A0522D">' + sec.title + '</h3>';
+    sec.fields.forEach(([label, val]) => {
+      if (val) html += '<div class="field"><label>' + label + '</label><div class="value">' + val + '</div></div>';
+    });
   });
 
-  html += '<h3 style="margin:16px 0 8px">Admin Review</h3>';
-  html += '<div class="field"><label>Status</label><select id="appStatus"><option value="submitted"' + (app.status==='submitted'?' selected':'') + '>Submitted</option><option value="reviewed"' + (app.status==='reviewed'?' selected':'') + '>Reviewed</option><option value="approved"' + (app.status==='approved'?' selected':'') + '>Approved</option><option value="rejected"' + (app.status==='rejected'?' selected':'') + '>Rejected</option></select></div>';
+  // Admin review
+  html += '<h3 style="margin:16px 0 8px">Admin Decision</h3>';
+  html += '<div class="field"><label>Status</label><select id="appStatus"><option value="submitted"' + (app.status==='submitted'?' selected':'') + '>Submitted</option><option value="reviewed"' + (app.status==='reviewed'?' selected':'') + '>Reviewed</option><option value="approved"' + (app.status==='approved'?' selected':'') + '>Approved</option><option value="waitlist"' + (app.status==='waitlist'?' selected':'') + '>Waitlist</option><option value="rejected"' + (app.status==='rejected'?' selected':'') + '>Rejected</option></select></div>';
   html += '<div class="field"><label>Admin Notes</label><textarea id="appNotes" rows="3">' + (app.admin_notes || '') + '</textarea></div>';
   html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
 
@@ -1303,9 +1566,18 @@ function renderApplicationForm() {
       <div class="form-group"><label>You mentioned your housing situation. If we visited your home, what would we see in terms of space for a cat? *</label><textarea name="verify_home_description" rows="2" required></textarea></div>
       <div class="form-group"><label>How did you first learn about Blue Sky Cattery? *</label><textarea name="how_found_us" rows="2" required></textarea></div>
 
-      <div class="form-section">Preferences</div>
-      <div class="form-group"><label>Kitten Preference</label>
-        <select name="kitten_preference"><option value="">No preference</option><option value="kitten1">Kitten #1</option><option value="kitten2">Kitten #2</option><option value="kitten3">Kitten #3</option><option value="kitten4">Kitten #4</option><option value="kitten5">Kitten #5</option><option value="kitten6">Kitten #6</option></select></div>
+      <div class="form-section">Purpose & Preferences</div>
+      <div class="form-group"><label>What is the purpose of this adoption? *</label>
+        <select name="purpose" required><option value="">Select...</option><option value="pet">Pet (companion animal)</option><option value="show">Show Cat</option><option value="breeding">Breeding Rights</option></select>
+        <div class="hint">Breeding rights are available to selected candidates only and carry additional fees.</div></div>
+      <div class="form-group"><label>Do you have a sex preference?</label>
+        <select name="sex_preference"><option value="">No preference</option><option value="male">Male</option><option value="female">Female</option></select></div>
+      <div class="form-group"><label>Primary Kitten Choice</label>
+        <select name="kitten_primary"><option value="">No preference</option><option value="Kitten #1">Kitten #1</option><option value="Kitten #2">Kitten #2</option><option value="Kitten #3">Kitten #3</option><option value="Kitten #4">Kitten #4</option><option value="Kitten #5">Kitten #5</option><option value="Kitten #6">Kitten #6</option></select></div>
+      <div class="form-group"><label>Backup Choice #1</label>
+        <select name="kitten_backup1"><option value="">No backup preference</option><option value="Kitten #1">Kitten #1</option><option value="Kitten #2">Kitten #2</option><option value="Kitten #3">Kitten #3</option><option value="Kitten #4">Kitten #4</option><option value="Kitten #5">Kitten #5</option><option value="Kitten #6">Kitten #6</option></select></div>
+      <div class="form-group"><label>Backup Choice #2</label>
+        <select name="kitten_backup2"><option value="">No backup preference</option><option value="Kitten #1">Kitten #1</option><option value="Kitten #2">Kitten #2</option><option value="Kitten #3">Kitten #3</option><option value="Kitten #4">Kitten #4</option><option value="Kitten #5">Kitten #5</option><option value="Kitten #6">Kitten #6</option></select></div>
       <div class="form-group"><label>When are you hoping to bring a kitten home?</label><input type="text" name="timeline"></div>
       <div class="form-group"><label>Is there anything else you'd like us to know about you or your home?</label><textarea name="additional_notes" rows="3"></textarea></div>
 
