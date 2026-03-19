@@ -3233,6 +3233,11 @@ async function showKittenEditModal(kittenId, kitten) {
   photoHtml += '</div>';
   photoHtml += '<input type="file" id="ekPhotoUpload" accept="image/*" multiple style="font-size:.82rem">';
   photoHtml += '<div id="ekUploadStatus" style="font-size:.78rem;color:#6B5B4B;margin-top:4px"></div>';
+  photoHtml += '<div style="margin-top:8px;padding:10px;background:#F5EDE0;border-radius:6px;font-size:.75rem;color:#6B5B4B">';
+  photoHtml += '<strong>Upload options:</strong><br>';
+  photoHtml += '&#8226; <strong>Here:</strong> Click the file picker above to upload from your device. Photos are auto-optimized for web.<br>';
+  photoHtml += '&#8226; <strong>By email:</strong> Send photos to <strong>kittens@blueskycattery.com</strong> from an admin email. Name files after the kitten &mdash; e.g. <strong>' + esc(kitten.name || 'Kitten') + '1.jpg</strong>, <strong>' + esc(kitten.name || 'Kitten') + '2.jpg</strong>. They will be matched and added automatically. Unmatched photos go to the Todo page for manual assignment.<br>';
+  photoHtml += '&#8226; <strong>Buttons:</strong> &#9733; = set as primary photo &bull; &#8644; = reassign to different cat/kitten &bull; &#10005; = delete</div>';
   photoHtml += '</div>';
 
   modal.innerHTML = '<h2>Edit Kitten #' + kitten.number + '</h2>' +
@@ -3469,6 +3474,11 @@ async function showCatModal(cat) {
     photoHtml += '</div>';
     photoHtml += '<input type="file" id="catPhotoUpload" accept="image/*" multiple style="font-size:.82rem">';
     photoHtml += '<div id="catUploadStatus" style="font-size:.78rem;color:#6B5B4B;margin-top:4px"></div>';
+    photoHtml += '<div style="margin-top:8px;padding:10px;background:#F5EDE0;border-radius:6px;font-size:.75rem;color:#6B5B4B">';
+    photoHtml += '<strong>Upload options:</strong><br>';
+    photoHtml += '&#8226; <strong>Here:</strong> Click the file picker above to upload from your device. Photos are auto-optimized for web.<br>';
+    photoHtml += '&#8226; <strong>By email:</strong> Send photos to <strong>kittens@blueskycattery.com</strong> from an admin email. Name files after the cat &mdash; e.g. <strong>' + esc(cat.name) + '1.jpg</strong>, <strong>' + esc(cat.name) + '2.jpg</strong>. They will be matched and added automatically. Unmatched photos go to the Todo page for manual assignment.<br>';
+    photoHtml += '&#8226; <strong>Buttons:</strong> &#9733; = set as primary photo &bull; &#8644; = reassign to different cat/kitten &bull; &#10005; = delete</div>';
     photoHtml += '</div>';
   }
 
