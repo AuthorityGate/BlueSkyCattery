@@ -560,10 +560,17 @@ export default {
     // Set Brevo key from environment secret
     _brevoKey = env.BREVO_API_KEY || null;
 
-    // Ensure sessions table exists
+    // Ensure tables and columns exist
     try {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)').run();
-    } catch (e) { /* table exists */ }
+    } catch (e) {}
+    const _alters = [
+      'ALTER TABLE users ADD COLUMN reset_token TEXT',
+      'ALTER TABLE users ADD COLUMN reset_expires TEXT',
+      'ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0',
+      'ALTER TABLE users ADD COLUMN verify_token TEXT',
+    ];
+    for (const sql of _alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
 
     const url = new URL(request.url);
     const path = url.pathname;

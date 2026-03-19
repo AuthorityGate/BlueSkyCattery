@@ -530,6 +530,8 @@ export default {
       'ALTER TABLE kittens ADD COLUMN go_home_checklist JSON',
       'ALTER TABLE users ADD COLUMN admin_notes TEXT',
       'ALTER TABLE users ADD COLUMN verification JSON',
+      'ALTER TABLE users ADD COLUMN reset_token TEXT',
+      'ALTER TABLE users ADD COLUMN reset_expires TEXT',
     ];
     for (const sql of alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
 
