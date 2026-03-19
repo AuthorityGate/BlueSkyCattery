@@ -1546,7 +1546,20 @@ export default {
       if (path === '/api/admin/users' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const users = await env.DB.prepare('SELECT id, email, role, status, lead_id, welcome_sent_at, created_at, updated_at FROM users ORDER BY created_at DESC').all();
+        const search = url.searchParams.get('search') || '';
+
+        // Ensure admin_notes column exists
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN admin_notes TEXT").run(); } catch(e) {}
+
+        let sql = 'SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1';
+        const params = [];
+        if (search) {
+          sql += ' AND (LOWER(u.email) LIKE ? OR LOWER(COALESCE(l.name,\'\')) LIKE ? OR LOWER(COALESCE(l.phone,\'\')) LIKE ?)';
+          const s = '%' + search.toLowerCase() + '%';
+          params.push(s, s, s);
+        }
+        sql += ' ORDER BY u.created_at DESC';
+        const users = await env.DB.prepare(sql).bind(...params).all();
         return json({ users: users.results });
       }
 
@@ -1560,6 +1573,7 @@ export default {
         const values = [];
         if (data.role !== undefined) { fields.push('role = ?'); values.push(data.role); }
         if (data.status !== undefined) { fields.push('status = ?'); values.push(data.status); }
+        if (data.admin_notes !== undefined) { fields.push('admin_notes = ?'); values.push(data.admin_notes); }
         fields.push('updated_at = ?'); values.push(now());
         values.push(userId);
         await env.DB.prepare('UPDATE users SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
@@ -3161,30 +3175,52 @@ async function renderEmails(container) {
 
 // ---- Users ----
 
+let userSearch = '';
+
 async function renderUsers(container) {
-  const { users } = await api('/admin/users');
+  const params = new URLSearchParams();
+  if (userSearch) params.set('search', userSearch);
+  const { users } = await api('/admin/users?' + params.toString());
   const panel = el('div', { class: 'panel active' });
 
-  let html = '<h2 style="margin:20px 0 12px">User Management</h2>';
-  html += '<table><thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Lead ID</th><th>Welcome Sent</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+  // Search bar
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 16px;flex-wrap:wrap;gap:12px">';
+  html += '<h2 style="margin:0">User Management</h2>';
+  html += '<div style="display:flex;gap:8px;align-items:center">';
+  html += '<input type="text" id="userSearchInput" placeholder="Search name, email, phone..." value="' + esc(userSearch) + '" style="padding:8px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;width:260px">';
+  html += '<button class="btn btn-sm btn-outline" id="userSearchBtn">Search</button>';
+  html += '</div></div>';
+
+  html += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (users||[]).length + ' user(s)' + (userSearch ? ' matching "' + esc(userSearch) + '"' : '') + '</div>';
+
+  html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Notes</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
   (users || []).forEach(u => {
     html += '<tr>';
-    html += '<td><strong>' + esc(u.email) + '</strong></td>';
+    html += '<td><strong>' + esc(u.lead_name || '---') + '</strong></td>';
+    html += '<td>' + esc(u.email) + '</td>';
+    html += '<td>' + esc(u.lead_phone || '---') + '</td>';
     html += '<td><span style="padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:' + (u.role === 'admin' ? '#A0522D' : '#87A5B4') + ';color:#fff;text-transform:uppercase">' + esc(u.role) + '</span></td>';
     html += '<td>' + badge(u.status) + '</td>';
-    html += '<td>' + (u.lead_id || '---') + '</td>';
-    html += '<td>' + (u.welcome_sent_at ? timeAgo(u.welcome_sent_at) : '---') + '</td>';
+    html += '<td style="max-width:200px;font-size:.78rem;color:#6B5B4B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(u.admin_notes || '') + '">' + esc(u.admin_notes ? (u.admin_notes.length > 40 ? u.admin_notes.slice(0,40) + '...' : u.admin_notes) : '---') + '</td>';
     html += '<td>' + timeAgo(u.created_at) + '</td>';
-    html += '<td>';
+    html += '<td style="white-space:nowrap">';
     html += '<button class="btn btn-outline btn-sm" data-user-edit="' + u.id + '">Edit</button> ';
     html += '<button class="btn btn-danger btn-sm" data-user-reset="' + u.id + '">Reset PW</button>';
     html += '</td></tr>';
   });
   html += '</tbody></table>';
-  if (!users || users.length === 0) html += '<p style="color:#6B5B4B;padding:20px;text-align:center">No users.</p>';
+  if (!users || users.length === 0) html += '<p style="color:#6B5B4B;padding:20px;text-align:center">No users match your search.</p>';
 
   panel.innerHTML = html;
   container.appendChild(panel);
+
+  // Search handlers
+  document.getElementById('userSearchBtn').onclick = () => {
+    userSearch = document.getElementById('userSearchInput').value;
+    container.innerHTML = '';
+    renderUsers(container);
+  };
+  document.getElementById('userSearchInput').onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('userSearchBtn').click(); };
 
   // Edit handlers
   panel.querySelectorAll('[data-user-edit]').forEach(btn => {
@@ -3217,11 +3253,18 @@ function showUserEditModal(user) {
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
   const modal = el('div', { class: 'modal' });
   modal.innerHTML = '<h2>Edit User</h2>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">' +
+    '<div class="field"><label>Name</label><div class="value" style="font-weight:700">' + esc(user.lead_name || '---') + '</div></div>' +
     '<div class="field"><label>Email</label><div class="value">' + esc(user.email) + '</div></div>' +
+    '<div class="field"><label>Phone</label><div class="value">' + esc(user.lead_phone || '---') + '</div></div>' +
+    '<div class="field"><label>Created</label><div class="value">' + esc(user.created_at || '') + '</div></div>' +
+    '</div>' +
+    (user.lead_id ? '<div style="font-size:.78rem;color:#6B5B4B;margin-bottom:12px">Lead ID: ' + user.lead_id + ' &mdash; <a href="#" style="color:#A0522D" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ');return false">View Lead</a></div>' : '') +
     '<div class="form-grid">' +
     '<div class="field"><label>Role</label><select id="euRole"><option value="applicant"' + (user.role === 'applicant' ? ' selected' : '') + '>Applicant</option><option value="admin"' + (user.role === 'admin' ? ' selected' : '') + '>Admin</option></select></div>' +
     '<div class="field"><label>Status</label><select id="euStatus"><option value="active"' + (user.status === 'active' ? ' selected' : '') + '>Active</option><option value="suspended"' + (user.status === 'suspended' ? ' selected' : '') + '>Suspended</option><option value="inactive"' + (user.status === 'inactive' ? ' selected' : '') + '>Inactive</option></select></div>' +
     '</div>' +
+    '<div class="field" style="margin-top:12px"><label>Admin Notes</label><textarea id="euNotes" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem" placeholder="Call notes, observations, follow-up reminders...">' + esc(user.admin_notes || '') + '</textarea></div>' +
     '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
 
   bg.appendChild(modal);
@@ -3230,7 +3273,8 @@ function showUserEditModal(user) {
   document.getElementById('saveUserBtn').onclick = async () => {
     await api('/admin/users/' + user.id, { method: 'PUT', body: JSON.stringify({
       role: document.getElementById('euRole').value,
-      status: document.getElementById('euStatus').value
+      status: document.getElementById('euStatus').value,
+      admin_notes: document.getElementById('euNotes').value
     })});
     bg.remove();
     renderApp();
