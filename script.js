@@ -301,17 +301,29 @@ function submitContactForm(e) {
     return false;
 }
 
-// Reservation Form - sends to portal API, redirects to thanks page
+// Reservation Form - sends to portal API, creates account, redirects to portal
 function submitReserveForm(e) {
     e.preventDefault();
     var form = document.getElementById('reservationForm');
     var submitBtn = form.querySelector('button[type="submit"]');
     var fd = new FormData(form);
     var data = {};
-    fd.forEach(function (v, k) { data[k] = v; });
+    fd.forEach(function (v, k) { if (k !== 'password_confirm') data[k] = v; });
+
+    // Validate passwords
+    var pass = fd.get('password');
+    var confirm = fd.get('password_confirm');
+    if (!pass || pass.length < 8) {
+        alert('Password must be at least 8 characters.');
+        return false;
+    }
+    if (pass !== confirm) {
+        alert('Passwords do not match.');
+        return false;
+    }
 
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Sending...';
+    submitBtn.textContent = 'Creating your account...';
 
     fetch(PORTAL_API + '/reserve', {
         method: 'POST',
@@ -319,10 +331,12 @@ function submitReserveForm(e) {
         body: JSON.stringify(data)
     }).then(function (res) { return res.json(); })
     .then(function (result) {
-        if (result.success) {
+        if (result.success && result.token) {
+            window.location.href = 'https://portal.blueskycattery.com/?token=' + result.token;
+        } else if (result.success) {
             window.location.href = 'thanks.html';
         } else {
-            alert('Something went wrong. Please try again or email kittens@blueskycattery.com directly.');
+            alert(result.error || 'Something went wrong. Please try again or email kittens@blueskycattery.com directly.');
             submitBtn.disabled = false;
             submitBtn.textContent = 'Submit Reservation Request';
         }

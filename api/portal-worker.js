@@ -668,7 +668,27 @@ export default {
         await sendEmail('Deanna@blueskycattery.com', 'New Kitten Reservation: ' + name,
           'New kitten reservation request:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nKitten: ' + (kitten || 'General') + '\n\nFull details:\n' + fields + '\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
 
-        return json({ success: true, message: 'Reservation saved' });
+        // Auto-create account if password provided
+        let accountToken = null;
+        if (data.password && data.password.length >= 8) {
+          const existingUser = await env.DB.prepare('SELECT id, password_hash, status FROM users WHERE email = ?').bind(email).first();
+          if (!existingUser) {
+            const passwordHash = await hashPassword(data.password);
+            const userResult = await env.DB.prepare(
+              'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            ).bind(leadId, email, passwordHash, 'applicant', 'active', now(), now()).run();
+            accountToken = await createSession(env.DB, userResult.meta.last_row_id, 'applicant');
+            await updateBrevoContact(email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], []);
+          } else if (existingUser.status === 'active') {
+            // Existing account - try to log them in
+            const valid = await verifyPassword(data.password, existingUser.password_hash);
+            if (valid) {
+              accountToken = await createSession(env.DB, existingUser.id, 'applicant');
+            }
+          }
+        }
+
+        return json({ success: true, message: 'Reservation saved', token: accountToken });
       }
 
       // Public kitten availability for website
@@ -866,6 +886,54 @@ export default {
         await env.DB.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL, updated_at = ? WHERE id = ?').bind(hash, now(), user.id).run();
 
         return json({ success: true, message: 'Password has been reset. You can now log in.' });
+      }
+
+      // Self-registration (from portal login page)
+      if (path === '/api/auth/register' && method === 'POST') {
+        const data = await parseBody(request);
+        const { name, email, password } = data;
+
+        if (!name || !email || !password) {
+          return json({ error: 'Name, email, and password are required' }, 400);
+        }
+        if (password.length < 8) {
+          return json({ error: 'Password must be at least 8 characters' }, 400);
+        }
+
+        const existingUser = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+        if (existingUser) {
+          return json({ error: 'An account already exists with this email. Please log in instead.' }, 400);
+        }
+
+        let leadId;
+        const existingLead = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
+        if (existingLead) {
+          leadId = existingLead.id;
+          await env.DB.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').bind(now(), leadId).run();
+        } else {
+          const result = await env.DB.prepare(
+            'INSERT INTO leads (name, email, phone, subject, message, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          ).bind(name, email, null, 'Self Registration', 'Registered via portal', 'self_register', 'new', now(), now()).run();
+          leadId = result.meta.last_row_id;
+        }
+
+        const passwordHash = await hashPassword(password);
+        const userResult = await env.DB.prepare(
+          'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(leadId, email, passwordHash, 'applicant', 'active', now(), now()).run();
+        const userId = userResult.meta.last_row_id;
+
+        const sessionToken = await createSession(env.DB, userId, 'applicant');
+
+        // Sync to Brevo
+        await syncToBrevoCRM({ name, email, source: 'self_register', status: 'new' }, BREVO_LISTS.leads, {});
+        await updateBrevoContact(email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]);
+
+        // Notify admin
+        await sendEmail('Deanna@blueskycattery.com', 'New Self-Registration: ' + name,
+          'A new user registered directly on the portal.\n\nName: ' + name + '\nEmail: ' + email + '\n\nThey now have access to fill out the adoption application.\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
+
+        return json({ success: true, token: sessionToken });
       }
 
       if (path === '/api/auth/logout' && method === 'POST') {
@@ -1141,7 +1209,17 @@ async function renderLogin() {
         <input type="email" id="forgotEmail" placeholder="Email address" style="width:100%;padding:12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;margin-bottom:8px">
         <button class="btn btn-primary" id="forgotBtn" style="width:100%">Send Reset Link</button>
       </div>
-      <p style="margin-top:16px;font-size:.82rem;color:#6B5B4B;text-align:center">Don't have an account? Contact us at <a href="https://blueskycattery.com/contact.html" style="color:#A0522D">blueskycattery.com</a> to get started.</p>
+      <p style="margin-top:16px;font-size:.82rem;color:#6B5B4B;text-align:center">Don't have an account? <a href="#" id="registerLink" style="color:#A0522D;font-weight:600">Create one here</a></p>
+      <div id="registerForm" style="display:none;margin-top:16px">
+        <h2 style="font-size:1.2rem;margin-bottom:4px;color:#3E3229">Create Account</h2>
+        <p style="font-size:.82rem;color:#6B5B4B;margin-bottom:12px">Create your account to apply for kitten adoption, sign up for newsletters, and receive litter notifications.</p>
+        <div id="registerError" class="error hidden"></div>
+        <input type="text" id="registerName" placeholder="Full Name" required style="width:100%;padding:12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;margin-bottom:12px">
+        <input type="email" id="registerEmail" placeholder="Email" required style="width:100%;padding:12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;margin-bottom:12px">
+        <input type="password" id="registerPass" placeholder="Password (min 8 characters)" required minlength="8" style="width:100%;padding:12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;margin-bottom:12px">
+        <button class="btn btn-primary" id="registerBtn" style="width:100%">Create Account</button>
+        <p style="margin-top:8px;font-size:.82rem;color:#6B5B4B;text-align:center">Already have an account? <a href="#" id="backToLogin" style="color:#A0522D">Sign in</a></p>
+      </div>
     </div>
   </div>\`;
 
@@ -1175,6 +1253,44 @@ async function renderLogin() {
     btn.disabled = true; btn.textContent = 'Sending...';
     const res = await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
     document.getElementById('forgotForm').innerHTML = '<p style="color:#7A8B6F;font-size:.9rem;text-align:center;padding:12px">If an account exists with that email, a password reset link has been sent. Check your inbox (and spam folder).</p>';
+  };
+
+  document.getElementById('registerLink').onclick = (e) => {
+    e.preventDefault();
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('forgotLink').style.display = 'none';
+    document.getElementById('registerForm').style.display = 'block';
+  };
+
+  document.getElementById('backToLogin').onclick = (e) => {
+    e.preventDefault();
+    document.getElementById('loginForm').style.display = 'block';
+    document.getElementById('forgotLink').style.display = 'block';
+    document.getElementById('registerForm').style.display = 'none';
+  };
+
+  document.getElementById('registerBtn').onclick = async () => {
+    const name = document.getElementById('registerName').value;
+    const email = document.getElementById('registerEmail').value;
+    const pass = document.getElementById('registerPass').value;
+    if (!name || !email || !pass) return;
+    if (pass.length < 8) {
+      document.getElementById('registerError').textContent = 'Password must be at least 8 characters';
+      document.getElementById('registerError').classList.remove('hidden');
+      return;
+    }
+    const btn = document.getElementById('registerBtn');
+    btn.disabled = true; btn.textContent = 'Creating account...';
+    const res = await api('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password: pass }) });
+    if (res.success) {
+      authToken = res.token;
+      localStorage.setItem('bsc_portal_token', res.token);
+      renderPortal();
+    } else {
+      document.getElementById('registerError').textContent = res.error || 'Registration failed';
+      document.getElementById('registerError').classList.remove('hidden');
+      btn.disabled = false; btn.textContent = 'Create Account';
+    }
   };
 }
 
@@ -1455,6 +1571,15 @@ async function disableAccount() {
 
 // Init
 (async () => {
+  // Check for token from reservation redirect
+  const urlParams = new URLSearchParams(window.location.search);
+  const redirectToken = urlParams.get('token');
+  if (redirectToken) {
+    authToken = redirectToken;
+    localStorage.setItem('bsc_portal_token', redirectToken);
+    window.history.replaceState({}, '', '/');
+  }
+
   if (authToken) {
     const me = await api('/auth/me');
     if (me.user) return renderPortal();

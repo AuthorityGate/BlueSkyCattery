@@ -74,6 +74,7 @@
                 <li><a href="breed.html">The Breed</a></li>
                 <li><a href="cats.html" class="active">Meet the Cats</a></li>
                 <li><a href="contact.html">Contact Us</a></li>
+                <li><a href="https://portal.blueskycattery.com" class="nav-portal">My Portal</a></li>
             </ul>
         </div>
     </nav>
@@ -535,8 +536,16 @@
                     <label for="resNotes">Anything else you'd like us to know?</label>
                     <textarea id="resNotes" name="notes" rows="2"></textarea>
                 </div>
+                <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:2px solid #D4C5A9">
+                    <label style="font-size:1rem;font-weight:700;color:#A0522D;margin-bottom:8px;display:block">Create Your Portal Account</label>
+                    <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:12px">Create a password to access our Adoption Portal where you can complete the full application, track your reservation, and receive updates.</p>
+                    <label for="resPassword">Password (min 8 characters) *</label>
+                    <input type="password" id="resPassword" name="password" required minlength="8" placeholder="Choose a secure password">
+                    <label for="resPasswordConfirm" style="margin-top:8px">Confirm Password *</label>
+                    <input type="password" id="resPasswordConfirm" name="password_confirm" required minlength="8" placeholder="Confirm your password">
+                </div>
                 <div class="form-notice">
-                    <p><strong>Reservation Process:</strong> This form begins the application process. Approved families will be contacted to place a non-refundable $500 deposit to secure their kitten, applied toward the total adoption fee. We screen every application &mdash; because our kittens deserve the very best homes.</p>
+                    <p><strong>What happens next:</strong> After submitting, you'll be redirected to our Adoption Portal where you can complete the full application. Your reservation details will already be on file. Approved families will be contacted to place a non-refundable $500 deposit.</p>
                 </div>
                 <button type="submit" class="btn btn-primary btn-full">Submit Reservation Request</button>
             </form>
