@@ -503,37 +503,61 @@ async function writeAuditLog(db, userId, action, details) {
 
 // ---- Route Handler ----
 
+let _schemaReady = false;
+
 export default {
   async fetch(request, env) {
     _brevoKey = env.BREVO_API_KEY || null;
 
-    // Ensure all tables and columns exist - batched into one DB round-trip
-    try {
-      await env.DB.batch([
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, details TEXT, created_at TEXT)'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS cats (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, breed TEXT, role TEXT, sex TEXT, color TEXT, bio TEXT, photo_url TEXT, registration TEXT, health_tested INTEGER DEFAULT 0, status TEXT DEFAULT \'active\', sort_order INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS email_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, template_name TEXT, subject TEXT, body_template TEXT, trigger_event TEXT, days_after INTEGER DEFAULT 0, active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT)'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS grading_config (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, key TEXT, value TEXT, updated_at TEXT)'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')'),
-        env.DB.prepare('CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, note TEXT, details JSON, created_by INTEGER, created_at TEXT)'),
-      ]);
-    } catch(e) {}
-    // Column migrations (can't batch ALTER TABLE - they throw on existing columns)
-    const alters = [
-      'ALTER TABLE kittens ADD COLUMN deposit_amount REAL',
-      'ALTER TABLE kittens ADD COLUMN deposit_received_date TEXT',
-      'ALTER TABLE kittens ADD COLUMN deposit_method TEXT',
-      'ALTER TABLE kittens ADD COLUMN balance_due REAL',
-      'ALTER TABLE kittens ADD COLUMN payment_notes TEXT',
-      'ALTER TABLE kittens ADD COLUMN go_home_checklist JSON',
-      'ALTER TABLE users ADD COLUMN admin_notes TEXT',
-      'ALTER TABLE users ADD COLUMN verification JSON',
-      'ALTER TABLE users ADD COLUMN reset_token TEXT',
-      'ALTER TABLE users ADD COLUMN reset_expires TEXT',
-    ];
-    for (const sql of alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
+    if (!_schemaReady) {
+      // Ensure all tables and columns exist - batched into one DB round-trip
+      try {
+        await env.DB.batch([
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, details TEXT, created_at TEXT)'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS cats (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, breed TEXT, role TEXT, sex TEXT, color TEXT, bio TEXT, photo_url TEXT, registration TEXT, health_tested INTEGER DEFAULT 0, status TEXT DEFAULT \'active\', sort_order INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS email_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, template_name TEXT, subject TEXT, body_template TEXT, trigger_event TEXT, days_after INTEGER DEFAULT 0, active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT)'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS grading_config (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, key TEXT, value TEXT, updated_at TEXT)'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')'),
+          env.DB.prepare('CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, note TEXT, details JSON, created_by INTEGER, created_at TEXT)'),
+        ]);
+      } catch(e) {}
+      // Column migrations (can't batch ALTER TABLE - they throw on existing columns)
+      const alters = [
+        'ALTER TABLE kittens ADD COLUMN deposit_amount REAL',
+        'ALTER TABLE kittens ADD COLUMN deposit_received_date TEXT',
+        'ALTER TABLE kittens ADD COLUMN deposit_method TEXT',
+        'ALTER TABLE kittens ADD COLUMN balance_due REAL',
+        'ALTER TABLE kittens ADD COLUMN payment_notes TEXT',
+        'ALTER TABLE kittens ADD COLUMN go_home_checklist JSON',
+        'ALTER TABLE users ADD COLUMN admin_notes TEXT',
+        'ALTER TABLE users ADD COLUMN verification JSON',
+        'ALTER TABLE users ADD COLUMN reset_token TEXT',
+        'ALTER TABLE users ADD COLUMN reset_expires TEXT',
+      ];
+      for (const sql of alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
+
+      // Database indexes for query performance
+      try {
+        await env.DB.batch([
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_users_lead_id ON users(lead_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_applications_user_id ON applications(user_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_kittens_litter_id ON kittens(litter_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_kittens_status ON kittens(status)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_photos_entity ON photos(entity_type, entity_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity_log(user_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)'),
+        ]);
+      } catch(e) {}
+
+      _schemaReady = true;
+    }
 
     const url = new URL(request.url);
     const path = url.pathname;
@@ -1304,29 +1328,15 @@ export default {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
 
-        // New leads needing review
-        const newLeads = await env.DB.prepare("SELECT l.id, l.name, l.email, l.source, l.created_at, u.id as user_id FROM leads l LEFT JOIN users u ON u.lead_id = l.id WHERE l.status = 'new' ORDER BY l.created_at DESC").all();
-
-        // Pending applications needing review
-        const pendingApps = await env.DB.prepare("SELECT id, full_name, email, score, purpose, created_at FROM applications WHERE status = 'submitted' ORDER BY score DESC").all();
-
-        // Approved apps not yet assigned a kitten
-        const unassigned = await env.DB.prepare("SELECT id, full_name, email, score, kitten_primary FROM applications WHERE status = 'approved' AND (kitten_primary IS NULL OR kitten_primary = '')").all();
-
-        // Kittens pending deposit
-        const pendingKittens = await env.DB.prepare("SELECT k.id, k.name, k.number, k.reserved_by, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status = 'pending'").all();
-
-        // Reserved kittens approaching go-home (within 30 days)
-        const soldKittens = await env.DB.prepare("SELECT k.id, k.name, k.number, k.reserved_by, l.litter_code, l.born_date FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status IN ('reserved', 'sold')").all();
-
-        // Recent inbound messages (last 7 days, not yet responded to)
-        const recentMessages = await env.DB.prepare(`
-          SELECT m.id, m.lead_id, m.subject, m.created_at, l.name, l.email
-          FROM messages m JOIN leads l ON m.lead_id = l.id
-          WHERE m.direction = 'inbound' AND m.created_at > datetime('now', '-7 days')
-          AND m.lead_id NOT IN (SELECT lead_id FROM messages WHERE direction = 'outbound' AND created_at > m.created_at)
-          ORDER BY m.created_at DESC LIMIT 20
-        `).all();
+        // Batch all todo queries into a single DB round-trip
+        const [newLeads, pendingApps, unassigned, pendingKittens, soldKittens, recentMessages] = await env.DB.batch([
+          env.DB.prepare("SELECT l.id, l.name, l.email, l.source, l.created_at, u.id as user_id FROM leads l LEFT JOIN users u ON u.lead_id = l.id WHERE l.status = 'new' ORDER BY l.created_at DESC"),
+          env.DB.prepare("SELECT id, full_name, email, score, purpose, created_at FROM applications WHERE status = 'submitted' ORDER BY score DESC"),
+          env.DB.prepare("SELECT id, full_name, email, score, kitten_primary FROM applications WHERE status = 'approved' AND (kitten_primary IS NULL OR kitten_primary = '')"),
+          env.DB.prepare("SELECT k.id, k.name, k.number, k.reserved_by, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status = 'pending'"),
+          env.DB.prepare("SELECT k.id, k.name, k.number, k.reserved_by, l.litter_code, l.born_date FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status IN ('reserved', 'sold')"),
+          env.DB.prepare("SELECT m.id, m.lead_id, m.subject, m.created_at, l.name, l.email FROM messages m JOIN leads l ON m.lead_id = l.id WHERE m.direction = 'inbound' AND m.created_at > datetime('now', '-7 days') AND m.lead_id NOT IN (SELECT lead_id FROM messages WHERE direction = 'outbound' AND created_at > m.created_at) ORDER BY m.created_at DESC LIMIT 20"),
+        ]);
 
         // Upcoming scheduled emails (next 30 days for sold kittens)
         let upcomingEmails = [];
@@ -1997,7 +2007,7 @@ export default {
       // =====================
 
       if (path === '/' || path === '' || path === '/admin' || path === '/admin/') {
-        return new Response(ADMIN_HTML, { headers: { 'Content-Type': 'text/html' } });
+        return new Response(ADMIN_HTML, { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache, must-revalidate', 'ETag': '"admin-v1"' } });
       }
 
       return json({ error: 'Not found' }, 404);
@@ -2313,14 +2323,14 @@ function renderResetPassword(token) {
 // ---- Main App Shell ----
 
 async function renderApp() {
-  const me = await api('/auth/me');
+  const [me, notif] = await Promise.all([
+    api('/auth/me'),
+    api('/admin/notifications').catch(() => ({ total: 0 }))
+  ]);
   if (!me.user || me.user.role !== 'admin') { authToken = null; localStorage.removeItem('bsc_admin_token'); return renderLogin(); }
 
   const app = document.getElementById('app');
   app.innerHTML = '';
-
-  // Fetch notification count
-  const notif = await api('/admin/notifications').catch(() => ({ total: 0 }));
   const badgeCount = notif.total || 0;
 
   const header = el('header', {},
@@ -3645,9 +3655,11 @@ async function showCatModal(cat) {
 async function renderSocial(container) {
   const panel = el('div', { class: 'panel active' });
   // Fetch social config
-  const fbPageIdRow = await api('/admin/settings').then(r => (r.settings || []).find(s => s.key === 'fb_page_id'));
-  const fbTokenRow = await api('/admin/settings').then(r => (r.settings || []).find(s => s.key === 'fb_page_token'));
-  const igUserIdRow = await api('/admin/settings').then(r => (r.settings || []).find(s => s.key === 'ig_user_id'));
+  const _socialSettings = await api('/admin/settings');
+  const _ss = (_socialSettings.settings || []);
+  const fbPageIdRow = _ss.find(s => s.key === 'fb_page_id');
+  const fbTokenRow = _ss.find(s => s.key === 'fb_page_token');
+  const igUserIdRow = _ss.find(s => s.key === 'ig_user_id');
   const isConfigured = fbPageIdRow && fbPageIdRow.value && fbTokenRow && fbTokenRow.value;
 
   let html = '<h2 style="margin:20px 0 4px">Social Media</h2>';
@@ -4101,11 +4113,6 @@ async function showUserEditModal(user) {
   }
 
   // ---- VERIFICATION CHECKLIST ----
-  // Get full verification data with details
-  let verifyDetails = {};
-  try { const ud = await api('/admin/users/' + user.id + '/trust'); verifyDetails = ud.verification || {}; } catch(e) {}
-  let fullVerification = {};
-  try { const uRow = await api('/admin/users/' + user.id + '/trust'); fullVerification = {}; } catch(e) {}
   // Get raw verification JSON for detail notes
   const rawVerify = trust.verification || {};
 

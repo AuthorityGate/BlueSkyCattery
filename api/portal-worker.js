@@ -555,22 +555,44 @@ async function sendEmail(to, subject, body, toName) {
 
 // ---- Route Handler ----
 
+let _schemaReady = false;
+
 export default {
   async fetch(request, env) {
     // Set Brevo key from environment secret
     _brevoKey = env.BREVO_API_KEY || null;
 
-    // Ensure tables and columns exist
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)').run();
-    } catch (e) {}
-    const _alters = [
-      'ALTER TABLE users ADD COLUMN reset_token TEXT',
-      'ALTER TABLE users ADD COLUMN reset_expires TEXT',
-      'ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0',
-      'ALTER TABLE users ADD COLUMN verify_token TEXT',
-    ];
-    for (const sql of _alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
+    // Ensure tables and columns exist (runs once per worker lifetime)
+    if (!_schemaReady) {
+      try {
+        await env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)').run();
+      } catch (e) {}
+      const _alters = [
+        'ALTER TABLE users ADD COLUMN reset_token TEXT',
+        'ALTER TABLE users ADD COLUMN reset_expires TEXT',
+        'ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN verify_token TEXT',
+        'ALTER TABLE leads ADD COLUMN sex_preference TEXT',
+        'ALTER TABLE leads ADD COLUMN color_preference TEXT',
+        'ALTER TABLE leads ADD COLUMN temperament_preference TEXT',
+        'ALTER TABLE leads ADD COLUMN eye_color_preference TEXT',
+        'ALTER TABLE leads ADD COLUMN other_preference TEXT',
+      ];
+      for (const sql of _alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
+
+      try {
+        await env.DB.batch([
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_users_lead_id ON users(lead_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_applications_user_id ON applications(user_id)'),
+          env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id)'),
+        ]);
+      } catch(e) {}
+
+      _schemaReady = true;
+    }
 
     const url = new URL(request.url);
     const path = url.pathname;
@@ -681,10 +703,6 @@ export default {
         let accountToken = null;
         let needsVerification = false;
         if (data.password && data.password.length >= 8) {
-          // Ensure verify columns exist
-          try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
-          try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
-
           const existingUser = await env.DB.prepare('SELECT id, password_hash, status, email_verified FROM users WHERE email = ?').bind(email).first();
           if (!existingUser) {
             const passwordHash = await hashPassword(data.password);
@@ -735,10 +753,8 @@ export default {
       if (path === '/api/config' && method === 'GET') {
         const safeKeys = ['cattery_name','cattery_tagline','cattery_location','cattery_email','cattery_registration','deposit_amount','kitten_base_price','go_home_weeks','current_litter'];
         const config = {};
-        for (const key of safeKeys) {
-          const row = await env.DB.prepare('SELECT value FROM config WHERE key = ?').bind(key).first();
-          if (row) config[key] = row.value;
-        }
+        const rows = await env.DB.prepare("SELECT key, value FROM config WHERE key IN ('" + safeKeys.join("','") + "')").all();
+        (rows.results || []).forEach(r => { config[r.key] = r.value; });
         return json({ config });
       }
 
@@ -775,13 +791,6 @@ export default {
             body: JSON.stringify({ email, attributes: brevoAttrs, listIds: lists, updateEnabled: true })
           });
         }
-
-        // Ensure preference columns exist
-        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN sex_preference TEXT").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN color_preference TEXT").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN temperament_preference TEXT").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN eye_color_preference TEXT").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN other_preference TEXT").run(); } catch(e) {}
 
         // Create or update lead in D1
         const existing = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
@@ -1043,10 +1052,6 @@ export default {
           return json({ error: 'An account already exists with this email. Please log in instead.' }, 400);
         }
 
-        // Ensure verify columns exist
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
-
         let leadId;
         const existingLead = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
         if (existingLead) {
@@ -1085,10 +1090,6 @@ export default {
         const { token: verifyToken } = await parseBody(request);
         if (!verifyToken) return json({ error: 'Verification token required' }, 400);
 
-        // Ensure columns exist
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
-
         const user = await env.DB.prepare('SELECT * FROM users WHERE verify_token = ? AND status = ?').bind(verifyToken, 'active').first();
         if (!user) return json({ error: 'Invalid or expired verification link.' }, 400);
 
@@ -1105,9 +1106,6 @@ export default {
       if (path === '/api/auth/resend-verify' && method === 'POST') {
         const { email } = await parseBody(request);
         if (!email) return json({ error: 'Email required' }, 400);
-
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
 
         const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
         if (!user || user.email_verified === 1) {
