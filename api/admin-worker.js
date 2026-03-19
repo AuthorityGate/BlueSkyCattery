@@ -2819,10 +2819,21 @@ async function showLeadModal(leadId) {
     html += '<pre style="white-space:pre-wrap;font-family:inherit;margin:0">' + esc(msg.body || '') + '</pre></div>';
   });
 
-  // Send message form
+  // Send message form with templates
   html += '<h3 style="margin:20px 0 8px">Send Message</h3>';
+  html += '<div class="field"><label>Quick Template</label><select id="msgTemplate" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;margin-bottom:8px">';
+  html += '<option value="">Write from scratch...</option>';
+  html += '<option value="welcome">Welcome &amp; Portal Access</option>';
+  html += '<option value="followup">Follow-Up / Checking In</option>';
+  html += '<option value="application_reminder">Application Reminder</option>';
+  html += '<option value="approved">Application Approved</option>';
+  html += '<option value="waitlist">Waitlisted - No Kittens Available</option>';
+  html += '<option value="kitten_available">Kitten Available for You</option>';
+  html += '<option value="deposit_reminder">Deposit Reminder</option>';
+  html += '<option value="thankyou">Thank You</option>';
+  html += '</select></div>';
   html += '<div class="field"><label>Subject</label><input type="text" id="msgSubject" value="Blue Sky Cattery" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px"></div>';
-  html += '<div class="field"><label>Message</label><textarea id="msgBody" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px" placeholder="Type your message to ' + esc(lead.name) + '..."></textarea></div>';
+  html += '<div class="field"><label>Message</label><textarea id="msgBody" rows="6" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px" placeholder="Type your message to ' + esc(lead.name) + '..."></textarea></div>';
 
   html += '<div class="actions">';
   html += '<button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Close</button>';
@@ -2832,6 +2843,23 @@ async function showLeadModal(leadId) {
   modal.innerHTML = html;
   bg.appendChild(modal);
   document.body.appendChild(bg);
+
+  // Email template handler
+  const _N = String.fromCharCode(10);
+  const _tpl = {
+    welcome: { s: 'Welcome to Blue Sky Cattery!', b: 'Dear ' + lead.name + ',' + _N + _N + 'Thank you for your interest in Blue Sky Cattery! We are so glad you found us.' + _N + _N + 'We specialize in CFA-registered Oriental Shorthairs, raised underfoot in our home in Northwest Missouri. Every kitten gets individual attention, love, and the best start to life.' + _N + _N + 'To take the next step, please visit our Application Portal:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'There you can create an account, fill out our adoption application, view available kittens, and join our waitlist for upcoming litters.' + _N + _N + 'If you have any questions at all, just reply to this email. We love talking about our cats!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    followup: { s: 'Checking In - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'I wanted to follow up and see if you had any questions about our kittens or the adoption process. We are always happy to chat!' + _N + _N + 'If you have not had a chance to visit our portal yet, you can do so at:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'Feel free to reply to this email anytime.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    application_reminder: { s: 'Your Application is Waiting - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'I noticed you started the adoption process but have not completed your application yet. No rush at all! Just wanted to let you know your progress is saved and you can pick up right where you left off.' + _N + _N + 'Log in here: https://portal.blueskycattery.com' + _N + _N + 'Our kittens go to approved families on a first-come basis, so completing your application sooner gives you the best selection.' + _N + _N + 'Let me know if you have any questions!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    approved: { s: 'Great News! Your Application is Approved - Blue Sky Cattery', b: 'Dear ' + lead.name + ',' + _N + _N + 'Wonderful news! After reviewing your application, we are happy to approve you as an adopter with Blue Sky Cattery.' + _N + _N + 'Next steps:' + _N + '1. Log into the portal: https://portal.blueskycattery.com' + _N + '2. Review available kittens and let us know your preference' + _N + '3. A $500 non-refundable deposit secures your kitten' + _N + _N + 'We will be in touch to schedule a video visit so you can meet your potential new family member!' + _N + _N + 'Congratulations and welcome to the Blue Sky family!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    waitlist: { s: 'Waitlist Update - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'Thank you for your application! We do not currently have kittens available that match your preferences, but we have added you to our priority waitlist.' + _N + _N + 'You will be among the first to know when new kittens arrive. We typically have 1-2 litters per year, and waitlist members get first choice.' + _N + _N + 'In the meantime, feel free to follow us on social media for updates and adorable kitten photos!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    kitten_available: { s: 'A Kitten is Available for You! - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'Exciting news! We have a kitten that we think would be a wonderful match for you.' + _N + _N + 'Please log into the portal to view details and photos:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'If you are interested, please let me know as soon as possible. A $500 non-refundable deposit will secure your kitten. Our kittens find homes quickly!' + _N + _N + 'I would also love to set up a video visit so you can see the kitten live.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    deposit_reminder: { s: 'Deposit Reminder - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'This is a friendly reminder that a $500 non-refundable deposit is needed to secure your kitten reservation. The deposit will be applied toward the total adoption fee.' + _N + _N + 'We accept: Venmo, Zelle, PayPal, check, or cash.' + _N + _N + 'Please let me know once you have sent the deposit or if you have any questions about payment.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+    thankyou: { s: 'Thank You! - Blue Sky Cattery', b: 'Dear ' + lead.name + ',' + _N + _N + 'Thank you so much for reaching out to Blue Sky Cattery. We truly appreciate your interest in our cats and our program.' + _N + _N + 'Whether you are looking for a kitten now or in the future, we are always here to answer questions and help you find the perfect companion.' + _N + _N + 'Do not hesitate to reach out anytime!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' }
+  };
+  document.getElementById('msgTemplate').onchange = () => {
+    const t = _tpl[document.getElementById('msgTemplate').value];
+    if (t) { document.getElementById('msgSubject').value = t.s; document.getElementById('msgBody').value = t.b; }
+  };
 
   document.getElementById('sendMsgBtn').onclick = async () => {
     const subject = document.getElementById('msgSubject').value;

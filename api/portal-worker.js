@@ -1373,6 +1373,7 @@ const PORTAL_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Blue Sky Cattery - Application Portal</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐾</text></svg>">
 <meta name="robots" content="noindex, nofollow">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1482,7 +1483,7 @@ async function renderLogin() {
     } else {
       const errEl = document.getElementById('loginError');
       if (res.needsVerification) {
-        errEl.innerHTML = (res.error || 'Email not verified.') + ' <a href="#" style="color:#A0522D" onclick="resendVerify(\'' + email + '\');return false">Resend verification email</a>';
+        errEl.innerHTML = (res.error || 'Email not verified.') + ' <a href="#" style="color:#A0522D" onclick="resendVerify(&#39;' + email + '&#39;);return false">Resend verification email</a>';
       } else {
         errEl.textContent = res.error || 'Login failed';
       }
@@ -1534,7 +1535,7 @@ async function renderLogin() {
     btn.disabled = true; btn.textContent = 'Creating account...';
     const res = await api('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password: pass }) });
     if (res.success && res.needsVerification) {
-      document.getElementById('registerForm').innerHTML = '<div style="text-align:center;padding:16px"><div style="font-size:2rem;margin-bottom:12px">&#9993;</div><h2 style="color:#7A8B6F;margin-bottom:8px">Check Your Email!</h2><p style="color:#6B5B4B;margin-bottom:16px">We sent a verification link to <strong>' + email + '</strong>. Click the link to activate your account.</p><p style="font-size:.82rem;color:#6B5B4B">Didn\'t get it? <a href="#" style="color:#A0522D" onclick="resendVerify(\'' + email + '\');return false">Resend verification email</a></p><p style="margin-top:12px"><a href="#" onclick="renderLogin();return false" style="color:#A0522D;font-size:.85rem">Back to login</a></p></div>';
+      document.getElementById('registerForm').innerHTML = '<div style="text-align:center;padding:16px"><div style="font-size:2rem;margin-bottom:12px">&#9993;</div><h2 style="color:#7A8B6F;margin-bottom:8px">Check Your Email!</h2><p style="color:#6B5B4B;margin-bottom:16px">We sent a verification link to <strong>' + email + '</strong>. Click the link to activate your account.</p><p style="font-size:.82rem;color:#6B5B4B">Didn&#39;t get it? <a href="#" style="color:#A0522D" onclick="resendVerify(&#39;' + email + '&#39;);return false">Resend verification email</a></p><p style="margin-top:12px"><a href="#" onclick="renderLogin();return false" style="color:#A0522D;font-size:.85rem">Back to login</a></p></div>';
     } else if (res.success && res.token) {
       authToken = res.token;
       localStorage.setItem('bsc_portal_token', res.token);
@@ -1542,7 +1543,7 @@ async function renderLogin() {
     } else {
       let errMsg = res.error || 'Registration failed';
       if (res.needsVerification) {
-        errMsg += ' <a href="#" style="color:#A0522D" onclick="resendVerify(\'' + email + '\');return false">Resend verification</a>';
+        errMsg += ' <a href="#" style="color:#A0522D" onclick="resendVerify(&#39;' + email + '&#39;);return false">Resend verification</a>';
       }
       document.getElementById('registerError').innerHTML = errMsg;
       document.getElementById('registerError').classList.remove('hidden');
