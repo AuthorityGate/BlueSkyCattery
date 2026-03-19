@@ -1924,8 +1924,10 @@ async function renderTodo(container) {
     data.recentMessages.forEach(m => {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
       html += '<div><strong>' + esc(m.name) + '</strong> &mdash; ' + esc(m.subject||'Message') + '<br><span style="font-size:.78rem;color:#6B5B4B">' + timeAgo(m.created_at) + '</span></div>';
+      html += '<div style="display:flex;gap:6px">';
       html += '<button class="btn btn-outline btn-sm" onclick="showLeadModal(' + m.lead_id + ')">Reply</button>';
-      html += '</div>';
+      html += '<button class="btn btn-sm" data-todo-dismiss-msg="' + m.id + '" style="background:#8B3A3A;color:#fff;font-size:.72rem" title="Dismiss">&#10005; Dismiss</button>';
+      html += '</div></div>';
     });
     html += '</div>';
   }
@@ -1958,6 +1960,24 @@ async function renderTodo(container) {
 
   panel.innerHTML = html;
   container.appendChild(panel);
+
+  // Attach dismiss handlers for messages
+  panel.querySelectorAll('[data-todo-dismiss-msg]').forEach(btn => {
+    btn.onclick = async () => {
+      const msgId = btn.getAttribute('data-todo-dismiss-msg');
+      if (!confirm('Dismiss this message? It will be deleted.')) return;
+      btn.disabled = true; btn.textContent = 'Deleting...';
+      await api('/admin/messages/' + msgId, { method: 'DELETE' });
+      btn.closest('div[style*="border-radius:8px"]').remove();
+      // Update counter
+      const badge = panel.querySelector('div[style*="background:#A0522D"][style*="border-radius:50%"]');
+      if (badge) {
+        const count = parseInt(badge.textContent) - 1;
+        if (count <= 0) { badge.closest('div[style*="margin-bottom:24px"]').remove(); }
+        else { badge.textContent = count; }
+      }
+    };
+  });
 }
 
 async function renderDashboard(container) {
