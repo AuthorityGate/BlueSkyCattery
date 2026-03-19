@@ -600,6 +600,33 @@ export default {
       }
 
       // Logout
+      // Forgot password
+      if (path === '/api/auth/forgot-password' && method === 'POST') {
+        const { email } = await parseBody(request);
+        if (!email) return json({ error: 'Email required' }, 400);
+        const user = await env.DB.prepare("SELECT * FROM users WHERE email = ? AND status = 'active' AND role = 'admin'").bind(email).first();
+        if (!user) return json({ success: true, message: 'If an admin account exists, a reset link has been sent.' });
+        const resetToken = generateToken();
+        const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        await env.DB.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').bind(resetToken, expires, user.id).run();
+        await sendEmail(email, 'Blue Sky Cattery Admin - Password Reset',
+          'You requested a password reset for your Blue Sky Cattery admin account.\n\nClick this link to reset your password (expires in 1 hour):\nhttps://admin.blueskycattery.com/?reset=' + resetToken + '\n\nIf you did not request this, please secure your account immediately.\n\n- Blue Sky Cattery', user.email);
+        return json({ success: true, message: 'If an admin account exists, a reset link has been sent.' });
+      }
+
+      // Reset password with token
+      if (path === '/api/auth/reset-password' && method === 'POST') {
+        const { token: resetToken, password } = await parseBody(request);
+        if (!resetToken || !password) return json({ error: 'Token and new password required' }, 400);
+        if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+        const user = await env.DB.prepare('SELECT * FROM users WHERE reset_token = ? AND reset_expires > ?').bind(resetToken, now()).first();
+        if (!user) return json({ error: 'Invalid or expired reset link.' }, 400);
+        const hash = await hashPassword(password);
+        await env.DB.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL, updated_at = ? WHERE id = ?').bind(hash, now(), user.id).run();
+        await writeAuditLog(env.DB, user.id, 'password_reset', 'user', user.id, 'Password reset via forgot password link');
+        return json({ success: true, message: 'Password has been reset.' });
+      }
+
       if (path === '/api/auth/logout' && method === 'POST') {
         if (token) {
           await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run();
@@ -1404,34 +1431,92 @@ function esc(str) {
 // ---- Login ----
 
 async function renderLogin() {
+  // Check for reset token in URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const resetToken = urlParams.get('reset');
+  if (resetToken) return renderResetPassword(resetToken);
+
   const app = document.getElementById('app');
   app.innerHTML = '';
-  const box = el('div', { class: 'login-page' },
-    el('div', { class: 'login-box' },
-      el('h1', {}, 'Admin Portal'),
-      el('div', { class: 'sub' }, 'Blue Sky Cattery'),
-      el('div', { id: 'loginError', class: 'error hidden' }),
-      el('form', { id: 'loginForm', onsubmit: async (e) => {
-        e.preventDefault();
-        const email = document.getElementById('loginEmail').value;
-        const pass = document.getElementById('loginPass').value;
-        const res = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password: pass }) });
-        if (res.success) {
-          authToken = res.token;
-          localStorage.setItem('bsc_admin_token', res.token);
-          renderApp();
-        } else {
-          document.getElementById('loginError').textContent = res.error || 'Login failed';
-          document.getElementById('loginError').classList.remove('hidden');
-        }
-      }},
-        el('input', { type: 'email', id: 'loginEmail', placeholder: 'Email', required: 'true' }),
-        el('input', { type: 'password', id: 'loginPass', placeholder: 'Password', required: 'true' }),
-        el('button', { type: 'submit', class: 'btn btn-primary', style: 'width:100%' }, 'Sign In')
-      )
-    )
-  );
-  app.appendChild(box);
+  app.innerHTML = '<div class="login-page"><div class="login-box">' +
+    '<h1>Admin Portal</h1><div class="sub">Blue Sky Cattery</div>' +
+    '<div id="loginError" class="error hidden"></div>' +
+    '<form id="loginForm">' +
+    '<input type="email" id="loginEmail" placeholder="Email" required>' +
+    '<input type="password" id="loginPass" placeholder="Password" required>' +
+    '<button type="submit" class="btn btn-primary" style="width:100%">Sign In</button>' +
+    '</form>' +
+    '<div style="text-align:center;margin-top:12px"><a href="#" id="forgotLink" style="color:#A0522D;font-size:.85rem">Forgot your password?</a></div>' +
+    '<div id="forgotForm" style="display:none;margin-top:16px">' +
+    '<p style="font-size:.85rem;color:#6B5B4B;margin-bottom:8px">Enter your admin email to receive a reset link.</p>' +
+    '<input type="email" id="forgotEmail" placeholder="Admin email" style="width:100%;padding:12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;margin-bottom:8px">' +
+    '<button class="btn btn-primary" id="forgotBtn" style="width:100%">Send Reset Link</button>' +
+    '</div></div></div>';
+
+  document.getElementById('loginForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('loginEmail').value;
+    const pass = document.getElementById('loginPass').value;
+    const res = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password: pass }) });
+    if (res.success) {
+      authToken = res.token;
+      localStorage.setItem('bsc_admin_token', res.token);
+      window.history.replaceState({}, '', '/');
+      renderApp();
+    } else {
+      document.getElementById('loginError').textContent = res.error || 'Login failed';
+      document.getElementById('loginError').classList.remove('hidden');
+    }
+  };
+
+  document.getElementById('forgotLink').onclick = (e) => {
+    e.preventDefault();
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('forgotForm').style.display = 'block';
+    document.getElementById('forgotLink').style.display = 'none';
+  };
+
+  document.getElementById('forgotBtn').onclick = async () => {
+    const email = document.getElementById('forgotEmail').value;
+    if (!email) return;
+    const btn = document.getElementById('forgotBtn');
+    btn.disabled = true; btn.textContent = 'Sending...';
+    await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+    document.getElementById('forgotForm').innerHTML = '<p style="color:#7A8B6F;font-size:.9rem;text-align:center;padding:12px">If an admin account exists with that email, a reset link has been sent. Check your inbox.</p>';
+  };
+}
+
+function renderResetPassword(token) {
+  document.getElementById('app').innerHTML = '<div class="login-page"><div class="login-box">' +
+    '<h1>Reset Password</h1><div class="sub">Blue Sky Cattery Admin</div>' +
+    '<div id="resetError" class="error hidden"></div>' +
+    '<div id="resetSuccess" style="display:none;color:#7A8B6F;text-align:center;padding:16px"></div>' +
+    '<form id="resetForm">' +
+    '<input type="password" id="newPass" placeholder="New password (min 8 characters)" required minlength="8">' +
+    '<input type="password" id="confirmPass" placeholder="Confirm new password" required minlength="8">' +
+    '<button type="submit" class="btn btn-primary" style="width:100%">Set New Password</button>' +
+    '</form></div></div>';
+
+  document.getElementById('resetForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const pass = document.getElementById('newPass').value;
+    const confirm = document.getElementById('confirmPass').value;
+    if (pass !== confirm) {
+      document.getElementById('resetError').textContent = 'Passwords do not match';
+      document.getElementById('resetError').classList.remove('hidden');
+      return;
+    }
+    const res = await api('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password: pass }) });
+    if (res.success) {
+      document.getElementById('resetForm').style.display = 'none';
+      document.getElementById('resetSuccess').style.display = 'block';
+      document.getElementById('resetSuccess').innerHTML = 'Password reset! <a href="/" style="color:#A0522D;font-weight:600">Click here to log in</a>';
+      window.history.replaceState({}, '', '/');
+    } else {
+      document.getElementById('resetError').textContent = res.error || 'Reset failed';
+      document.getElementById('resetError').classList.remove('hidden');
+    }
+  };
 }
 
 // ---- Main App Shell ----

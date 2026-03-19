@@ -758,6 +758,41 @@ export default {
       }
 
       // Logout
+      // Forgot password - send reset email
+      if (path === '/api/auth/forgot-password' && method === 'POST') {
+        const { email } = await parseBody(request);
+        if (!email) return json({ error: 'Email required' }, 400);
+        const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
+        if (!user) {
+          // Don't reveal whether email exists
+          return json({ success: true, message: 'If an account exists with that email, a reset link has been sent.' });
+        }
+        const resetToken = generateToken();
+        const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+        await env.DB.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').bind(resetToken, expires, user.id).run();
+
+        const resetUrl = (user.role === 'admin' ? 'https://admin.blueskycattery.com' : 'https://portal.blueskycattery.com') + '/?reset=' + resetToken;
+        await sendEmail(email, 'Blue Sky Cattery - Password Reset',
+          'You requested a password reset for your Blue Sky Cattery account.\n\nClick this link to reset your password (expires in 1 hour):\n' + resetUrl + '\n\nIf you did not request this, you can safely ignore this email.\n\n- Blue Sky Cattery', user.email);
+
+        return json({ success: true, message: 'If an account exists with that email, a reset link has been sent.' });
+      }
+
+      // Reset password with token
+      if (path === '/api/auth/reset-password' && method === 'POST') {
+        const { token: resetToken, password } = await parseBody(request);
+        if (!resetToken || !password) return json({ error: 'Token and new password required' }, 400);
+        if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+
+        const user = await env.DB.prepare('SELECT * FROM users WHERE reset_token = ? AND reset_expires > ?').bind(resetToken, now()).first();
+        if (!user) return json({ error: 'Invalid or expired reset link. Please request a new one.' }, 400);
+
+        const hash = await hashPassword(password);
+        await env.DB.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL, updated_at = ? WHERE id = ?').bind(hash, now(), user.id).run();
+
+        return json({ success: true, message: 'Password has been reset. You can now log in.' });
+      }
+
       if (path === '/api/auth/logout' && method === 'POST') {
         if (token) {
           await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run();
@@ -1003,17 +1038,34 @@ async function api(path, opts = {}) {
 }
 
 async function renderLogin() {
+  // Check for reset token in URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const resetToken = urlParams.get('reset');
+
+  if (resetToken) {
+    return renderResetPassword(resetToken);
+  }
+
   document.getElementById('app').innerHTML = \`
   <div class="login-page">
     <div class="login-box">
       <h1>Application Portal</h1>
       <div class="sub">Blue Sky Cattery</div>
       <div id="loginError" class="error hidden"></div>
+      <div id="loginSuccess" class="error hidden" style="color:#7A8B6F"></div>
       <form id="loginForm">
         <input type="email" id="loginEmail" placeholder="Email" required>
         <input type="password" id="loginPass" placeholder="Password" required>
         <button type="submit" class="btn btn-primary" style="width:100%">Sign In</button>
       </form>
+      <div style="text-align:center;margin-top:12px">
+        <a href="#" id="forgotLink" style="color:#A0522D;font-size:.85rem">Forgot your password?</a>
+      </div>
+      <div id="forgotForm" style="display:none;margin-top:16px">
+        <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:8px">Enter your email and we will send you a password reset link.</p>
+        <input type="email" id="forgotEmail" placeholder="Email address" style="width:100%;padding:12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.95rem;margin-bottom:8px">
+        <button class="btn btn-primary" id="forgotBtn" style="width:100%">Send Reset Link</button>
+      </div>
       <p style="margin-top:16px;font-size:.82rem;color:#6B5B4B;text-align:center">Don't have an account? Contact us at <a href="https://blueskycattery.com/contact.html" style="color:#A0522D">blueskycattery.com</a> to get started.</p>
     </div>
   </div>\`;
@@ -1026,10 +1078,65 @@ async function renderLogin() {
     if (res.success) {
       authToken = res.token;
       localStorage.setItem('bsc_portal_token', res.token);
+      window.history.replaceState({}, '', '/');
       renderPortal();
     } else {
       document.getElementById('loginError').textContent = res.error || 'Login failed';
       document.getElementById('loginError').classList.remove('hidden');
+    }
+  };
+
+  document.getElementById('forgotLink').onclick = (e) => {
+    e.preventDefault();
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('forgotForm').style.display = 'block';
+    document.getElementById('forgotLink').style.display = 'none';
+  };
+
+  document.getElementById('forgotBtn').onclick = async () => {
+    const email = document.getElementById('forgotEmail').value;
+    if (!email) return;
+    const btn = document.getElementById('forgotBtn');
+    btn.disabled = true; btn.textContent = 'Sending...';
+    const res = await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+    document.getElementById('forgotForm').innerHTML = '<p style="color:#7A8B6F;font-size:.9rem;text-align:center;padding:12px">If an account exists with that email, a password reset link has been sent. Check your inbox (and spam folder).</p>';
+  };
+}
+
+function renderResetPassword(token) {
+  document.getElementById('app').innerHTML = \`
+  <div class="login-page">
+    <div class="login-box">
+      <h1>Reset Password</h1>
+      <div class="sub">Blue Sky Cattery</div>
+      <div id="resetError" class="error hidden"></div>
+      <div id="resetSuccess" style="display:none;color:#7A8B6F;text-align:center;padding:16px"></div>
+      <form id="resetForm">
+        <input type="password" id="newPass" placeholder="New password (min 8 characters)" required minlength="8">
+        <input type="password" id="confirmPass" placeholder="Confirm new password" required minlength="8">
+        <button type="submit" class="btn btn-primary" style="width:100%">Set New Password</button>
+      </form>
+    </div>
+  </div>\`;
+
+  document.getElementById('resetForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const pass = document.getElementById('newPass').value;
+    const confirm = document.getElementById('confirmPass').value;
+    if (pass !== confirm) {
+      document.getElementById('resetError').textContent = 'Passwords do not match';
+      document.getElementById('resetError').classList.remove('hidden');
+      return;
+    }
+    const res = await api('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password: pass }) });
+    if (res.success) {
+      document.getElementById('resetForm').style.display = 'none';
+      document.getElementById('resetSuccess').style.display = 'block';
+      document.getElementById('resetSuccess').innerHTML = 'Password has been reset successfully!<br><br><a href="/" style="color:#A0522D;font-weight:600">Click here to log in</a>';
+      window.history.replaceState({}, '', '/');
+    } else {
+      document.getElementById('resetError').textContent = res.error || 'Reset failed';
+      document.getElementById('resetError').classList.remove('hidden');
     }
   };
 }
