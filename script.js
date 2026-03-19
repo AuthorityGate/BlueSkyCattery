@@ -234,7 +234,7 @@ document.addEventListener('keydown', function (e) {
 
 
 // --- Portal API ---
-var PORTAL_API = API || 'https://portal.blueskycattery.com/api';
+var PORTAL_API = 'https://portal.blueskycattery.com/api';
 
 // Contact Form - sends to portal API, redirects to thanks page
 function submitContactForm(e) {
