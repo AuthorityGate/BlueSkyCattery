@@ -1282,6 +1282,76 @@ export default {
         return json({ success: true, sent, failed, total: recipients.length });
       }
 
+      // ADMIN: TODO / ACTION CENTER
+      if (path === '/api/admin/todo' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+
+        // New leads needing review
+        const newLeads = await env.DB.prepare("SELECT id, name, email, source, created_at FROM leads WHERE status = 'new' ORDER BY created_at DESC").all();
+
+        // Pending applications needing review
+        const pendingApps = await env.DB.prepare("SELECT id, full_name, email, score, purpose, created_at FROM applications WHERE status = 'submitted' ORDER BY score DESC").all();
+
+        // Approved apps not yet assigned a kitten
+        const unassigned = await env.DB.prepare("SELECT id, full_name, email, score, kitten_primary FROM applications WHERE status = 'approved' AND (kitten_primary IS NULL OR kitten_primary = '')").all();
+
+        // Kittens pending deposit
+        const pendingKittens = await env.DB.prepare("SELECT k.id, k.name, k.number, k.reserved_by, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status = 'pending'").all();
+
+        // Reserved kittens approaching go-home (within 30 days)
+        const soldKittens = await env.DB.prepare("SELECT k.id, k.name, k.number, k.reserved_by, l.litter_code, l.born_date FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status IN ('reserved', 'sold')").all();
+
+        // Recent inbound messages (last 7 days, not yet responded to)
+        const recentMessages = await env.DB.prepare(`
+          SELECT m.id, m.lead_id, m.subject, m.created_at, l.name, l.email
+          FROM messages m JOIN leads l ON m.lead_id = l.id
+          WHERE m.direction = 'inbound' AND m.created_at > datetime('now', '-7 days')
+          AND m.lead_id NOT IN (SELECT lead_id FROM messages WHERE direction = 'outbound' AND created_at > m.created_at)
+          ORDER BY m.created_at DESC LIMIT 20
+        `).all();
+
+        // Upcoming scheduled emails (next 30 days for sold kittens)
+        let upcomingEmails = [];
+        try {
+          const sentLog = await env.DB.prepare('SELECT kitten_id, schedule_id FROM email_sent_log').all();
+          const sentSet = new Set(sentLog.results.map(r => r.kitten_id + '-' + r.schedule_id));
+          const schedules = await env.DB.prepare("SELECT * FROM email_schedules WHERE active = 1 AND trigger_type = 'go_home' ORDER BY days_after ASC").all();
+
+          for (const kitten of soldKittens.results) {
+            if (!kitten.born_date) continue;
+            const goHome = new Date(kitten.born_date);
+            goHome.setDate(goHome.getDate() + 98);
+
+            for (const sched of schedules.results) {
+              if (sentSet.has(kitten.id + '-' + sched.id)) continue;
+              const triggerDate = new Date(goHome);
+              triggerDate.setDate(triggerDate.getDate() + sched.days_after);
+              const daysUntil = Math.round((triggerDate - Date.now()) / 86400000);
+              if (daysUntil >= -1 && daysUntil <= 30) {
+                upcomingEmails.push({
+                  kitten: kitten.name || 'Kitten #' + kitten.number,
+                  recipient: kitten.reserved_by,
+                  email_name: sched.name,
+                  days_until: daysUntil,
+                  trigger_date: triggerDate.toISOString().split('T')[0]
+                });
+              }
+            }
+          }
+          upcomingEmails.sort((a, b) => a.days_until - b.days_until);
+        } catch (e) { /* email_sent_log might not exist yet */ }
+
+        return json({
+          newLeads: newLeads.results,
+          pendingApps: pendingApps.results,
+          unassigned: unassigned.results,
+          pendingKittens: pendingKittens.results,
+          recentMessages: recentMessages.results,
+          upcomingEmails: upcomingEmails
+        });
+      }
+
       // ADMIN: AUDIT LOG
       // =====================
 
@@ -1439,7 +1509,23 @@ tr:hover{background:rgba(212,197,169,.3)}
 .toggle input:checked+.slider{background:#7A8B6F}
 .toggle input:checked+.slider:before{transform:translateX(20px)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
-@media(max-width:768px){.stats-grid{grid-template-columns:1fr 1fr}table{font-size:.8rem}th,td{padding:8px 10px}.form-grid{grid-template-columns:1fr}nav.tabs button{padding:8px 10px;font-size:.75rem}}
+@media(max-width:768px){
+.stats-grid{grid-template-columns:1fr 1fr}
+table{font-size:.75rem;display:block;overflow-x:auto;white-space:nowrap}
+th,td{padding:6px 8px}
+.form-grid{grid-template-columns:1fr}
+nav.tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+nav.tabs button{padding:8px 10px;font-size:.72rem;white-space:nowrap;flex-shrink:0}
+.top-bar{flex-direction:column;gap:8px;text-align:center}
+.top-bar h1{font-size:1.1rem}
+.modal{padding:20px 16px;max-height:95vh}
+.modal h2{font-size:1.1rem}
+.field .value{font-size:.82rem;word-break:break-word}
+.score-detail{grid-template-columns:1fr}
+.actions{flex-wrap:wrap}
+.actions button,.actions a{flex:1 1 auto;min-width:0;text-align:center}
+.btn-sm{padding:4px 8px;font-size:.7rem}
+}
 </style>
 </head>
 <body>
@@ -1447,7 +1533,7 @@ tr:hover{background:rgba(212,197,169,.3)}
 <script>
 const API = window.location.origin + '/api';
 let authToken = localStorage.getItem('bsc_admin_token');
-let currentTab = 'dashboard';
+let currentTab = 'todo';
 
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...opts.headers };
@@ -1615,8 +1701,8 @@ async function renderApp() {
   );
   app.appendChild(header);
 
-  const tabs = ['dashboard','leads','applications','kittens','cats','settings','emails','users','audit'];
-  const tabLabels = { dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log' };
+  const tabs = ['todo','dashboard','leads','applications','kittens','cats','settings','emails','users','audit'];
+  const tabLabels = { todo:'To Do', dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log' };
 
   const nav = el('nav', { class: 'container tabs' });
   tabs.forEach(t => {
@@ -1627,7 +1713,8 @@ async function renderApp() {
   const content = el('div', { class: 'container' });
   app.appendChild(content);
 
-  if (currentTab === 'dashboard') await renderDashboard(content);
+  if (currentTab === 'todo') await renderTodo(content);
+  else if (currentTab === 'dashboard') await renderDashboard(content);
   else if (currentTab === 'leads') await renderLeads(content);
   else if (currentTab === 'applications') await renderApplications(content);
   else if (currentTab === 'kittens') await renderKittens(content);
@@ -1639,6 +1726,90 @@ async function renderApp() {
 }
 
 // ---- Dashboard ----
+
+async function renderTodo(container) {
+  const data = await api('/admin/todo');
+  const panel = el('div', { class: 'panel active' });
+  let html = '<h2 style="margin:20px 0 4px">Action Center</h2>';
+  html += '<p style="color:#6B5B4B;margin-bottom:20px;font-size:.88rem">Everything that needs your attention, in one place.</p>';
+
+  // Count total actions
+  const totalActions = (data.newLeads||[]).length + (data.pendingApps||[]).length + (data.recentMessages||[]).length + (data.pendingKittens||[]).length;
+
+  if (totalActions === 0 && (data.upcomingEmails||[]).length === 0) {
+    html += '<div style="text-align:center;padding:40px;color:#7A8B6F"><div style="font-size:2.5rem;margin-bottom:12px">&#10003;</div><h3>All caught up!</h3><p style="color:#6B5B4B">No pending actions right now.</p></div>';
+  }
+
+  // New Leads
+  if ((data.newLeads||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#87A5B4;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.newLeads.length + '</div><h3 style="margin:0;font-size:1rem">New Leads to Review</h3></div>';
+    data.newLeads.forEach(l => {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
+      html += '<div><strong>' + esc(l.name) + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(l.email) + ' &mdash; ' + esc(l.source) + ' &mdash; ' + timeAgo(l.created_at) + '</span></div>';
+      html += '<div style="display:flex;gap:6px"><button class="btn btn-outline btn-sm" onclick="currentTab=\'leads\';renderApp()">Review</button></div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Pending Applications
+  if ((data.pendingApps||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#D4AF37;color:#3E3229;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.pendingApps.length + '</div><h3 style="margin:0;font-size:1rem">Applications Pending Review</h3></div>';
+    data.pendingApps.forEach(a => {
+      const scoreColor = a.score >= 80 ? '#7A8B6F' : a.score >= 65 ? '#D4AF37' : a.score >= 45 ? '#A0522D' : '#8B3A3A';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
+      html += '<div style="display:flex;align-items:center;gap:10px"><span style="background:' + scoreColor + ';color:#fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + a.score + '</span>';
+      html += '<div><strong>' + esc(a.full_name||'N/A') + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(a.purpose||'pet') + ' &mdash; ' + timeAgo(a.created_at) + '</span></div></div>';
+      html += '<button class="btn btn-outline btn-sm" onclick="currentTab=\'applications\';renderApp()">Review</button>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Unanswered Messages
+  if ((data.recentMessages||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#A0522D;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.recentMessages.length + '</div><h3 style="margin:0;font-size:1rem">Unanswered Messages</h3></div>';
+    data.recentMessages.forEach(m => {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
+      html += '<div><strong>' + esc(m.name) + '</strong> &mdash; ' + esc(m.subject||'Message') + '<br><span style="font-size:.78rem;color:#6B5B4B">' + timeAgo(m.created_at) + '</span></div>';
+      html += '<button class="btn btn-outline btn-sm" onclick="showLeadModal(' + m.lead_id + ')">Reply</button>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Pending Deposits
+  if ((data.pendingKittens||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#87A5B4;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.pendingKittens.length + '</div><h3 style="margin:0;font-size:1rem">Awaiting Deposit</h3></div>';
+    data.pendingKittens.forEach(k => {
+      html += '<div style="padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
+      html += '<strong>' + esc(k.name||'Kitten #'+k.number) + '</strong> (' + esc(k.litter_code) + ') &mdash; Reserved by: ' + esc(k.reserved_by||'Unknown');
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Upcoming Automated Emails
+  if ((data.upcomingEmails||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#7A8B6F;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700">&#9993;</div><h3 style="margin:0;font-size:1rem">Upcoming Automated Emails (next 30 days)</h3></div>';
+    html += '<table><thead><tr><th>Email</th><th>Kitten</th><th>Recipient</th><th>Sends</th></tr></thead><tbody>';
+    data.upcomingEmails.forEach(e => {
+      const urgency = e.days_until <= 0 ? 'color:#8B3A3A;font-weight:700' : e.days_until <= 3 ? 'color:#D4AF37;font-weight:600' : 'color:#6B5B4B';
+      const label = e.days_until <= 0 ? 'Today!' : e.days_until === 1 ? 'Tomorrow' : 'In ' + e.days_until + ' days';
+      html += '<tr><td>' + esc(e.email_name) + '</td><td>' + esc(e.kitten) + '</td><td style="font-size:.82rem">' + esc(e.recipient||'—') + '</td><td style="' + urgency + '">' + label + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    html += '</div>';
+  }
+
+  panel.innerHTML = html;
+  container.appendChild(panel);
+}
 
 async function renderDashboard(container) {
   const data = await api('/admin/stats');
