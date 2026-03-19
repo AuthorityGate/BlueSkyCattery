@@ -1679,17 +1679,17 @@ export default {
         // Same phone, different email
         if (user.phone) {
           const phoneMatches = await env.DB.prepare('SELECT l.id, l.name, l.email, l.phone, l.source, u2.id as user_id FROM leads l LEFT JOIN users u2 ON u2.lead_id = l.id WHERE l.phone = ? AND l.email != ? AND l.phone IS NOT NULL').bind(user.phone, user.email).all();
-          phoneMatches.results.forEach(m => duplicates.push({ type: 'Same phone', name: m.name, email: m.email, has_account: !!m.user_id }));
+          phoneMatches.results.forEach(m => duplicates.push({ type: 'Same phone', name: m.name, email: m.email, has_account: !!m.user_id, user_id: m.user_id }));
         }
         // Same name, different email (fuzzy)
         if (user.name) {
           const nameMatches = await env.DB.prepare('SELECT l.id, l.name, l.email, l.phone, u2.id as user_id FROM leads l LEFT JOIN users u2 ON u2.lead_id = l.id WHERE LOWER(l.name) = LOWER(?) AND l.email != ?').bind(user.name, user.email).all();
-          nameMatches.results.forEach(m => duplicates.push({ type: 'Same name', name: m.name, email: m.email, phone: m.phone, has_account: !!m.user_id }));
+          nameMatches.results.forEach(m => duplicates.push({ type: 'Same name', name: m.name, email: m.email, phone: m.phone, has_account: !!m.user_id, user_id: m.user_id }));
         }
         // Same address, different email
         if (user.home_address && user.home_address.length > 5) {
           const addrMatches = await env.DB.prepare('SELECT l.id, l.name, l.email, u2.id as user_id FROM leads l LEFT JOIN users u2 ON u2.lead_id = l.id WHERE LOWER(l.home_address) = LOWER(?) AND l.email != ?').bind(user.home_address, user.email).all();
-          addrMatches.results.forEach(m => duplicates.push({ type: 'Same address', name: m.name, email: m.email, has_account: !!m.user_id }));
+          addrMatches.results.forEach(m => duplicates.push({ type: 'Same address', name: m.name, email: m.email, has_account: !!m.user_id, user_id: m.user_id }));
         }
 
         // Check for multiple applications with different responses
@@ -1819,6 +1819,74 @@ export default {
         const result = await env.DB.prepare('INSERT INTO activity_log (user_id, type, note, details, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
           .bind(userId, type, note || '', details ? JSON.stringify(details) : null, session.user_id, now()).run();
         return json({ success: true, id: result.meta.last_row_id });
+      }
+
+      // Merge two user accounts (keep primary, absorb secondary)
+      if (path === '/api/admin/users/merge' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const { primary_id, secondary_id } = await parseBody(request);
+        if (!primary_id || !secondary_id || primary_id === secondary_id) {
+          return json({ error: 'Two different user IDs required' }, 400);
+        }
+
+        const primary = await env.DB.prepare('SELECT u.*, l.name as lead_name, l.email as lead_email FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE u.id = ?').bind(primary_id).first();
+        const secondary = await env.DB.prepare('SELECT u.*, l.name as lead_name, l.email as lead_email FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE u.id = ?').bind(secondary_id).first();
+        if (!primary || !secondary) return json({ error: 'One or both users not found' }, 404);
+        if (primary.role === 'admin' || secondary.role === 'admin') return json({ error: 'Cannot merge admin accounts' }, 400);
+
+        const merged = [];
+
+        // Move activity log entries
+        const actMoved = await env.DB.prepare('UPDATE activity_log SET user_id = ? WHERE user_id = ?').bind(primary_id, secondary_id).run();
+        merged.push('Activity entries: ' + (actMoved.meta.changes || 0));
+
+        // Move applications
+        const appsMoved = await env.DB.prepare('UPDATE applications SET user_id = ? WHERE user_id = ?').bind(primary_id, secondary_id).run();
+        merged.push('Applications: ' + (appsMoved.meta.changes || 0));
+
+        // Move messages (via lead_id)
+        if (secondary.lead_id && primary.lead_id) {
+          const msgsMoved = await env.DB.prepare('UPDATE messages SET lead_id = ? WHERE lead_id = ?').bind(primary.lead_id, secondary.lead_id).run();
+          merged.push('Messages: ' + (msgsMoved.meta.changes || 0));
+        }
+
+        // Move sessions
+        await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(secondary_id).run();
+
+        // Merge admin notes
+        if (secondary.admin_notes) {
+          const combinedNotes = (primary.admin_notes || '') + (primary.admin_notes ? '\n---\n' : '') + '[Merged from ' + secondary.email + ']: ' + secondary.admin_notes;
+          await env.DB.prepare('UPDATE users SET admin_notes = ? WHERE id = ?').bind(combinedNotes, primary_id).run();
+          merged.push('Notes merged');
+        }
+
+        // Merge verification data
+        if (secondary.verification) {
+          try {
+            const pv = primary.verification ? JSON.parse(primary.verification) : {};
+            const sv = JSON.parse(secondary.verification);
+            // Only copy items from secondary that primary doesn't have
+            Object.entries(sv).forEach(([k, v]) => { if (!pv[k] || pv[k] === 'not_checked') pv[k] = v; });
+            await env.DB.prepare('UPDATE users SET verification = ? WHERE id = ?').bind(JSON.stringify(pv), primary_id).run();
+            merged.push('Verification merged');
+          } catch(e) {}
+        }
+
+        // Log the merge as activity on primary
+        await env.DB.prepare('INSERT INTO activity_log (user_id, type, note, created_by, created_at) VALUES (?, ?, ?, ?, ?)')
+          .bind(primary_id, 'system', 'Account merged: absorbed ' + secondary.email + ' (ID ' + secondary_id + '). ' + merged.join(', '), session.user_id, now()).run();
+
+        // Delete secondary user
+        await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(secondary_id).run();
+
+        // Mark secondary lead as merged
+        if (secondary.lead_id) {
+          await env.DB.prepare("UPDATE leads SET status = 'merged', updated_at = ? WHERE id = ?").bind(now(), secondary.lead_id).run();
+        }
+
+        await writeAuditLog(env.DB, session.user_id, 'users_merged', { primary_id, secondary_id, primary_email: primary.email, secondary_email: secondary.email, merged });
+        return json({ success: true, message: 'Merged ' + secondary.email + ' into ' + primary.email, details: merged });
       }
 
       // Reset user password
@@ -3662,7 +3730,12 @@ async function showUserEditModal(user) {
     if (trust.identity.duplicates.length > 0) {
       html += '<div style="margin-top:8px">';
       trust.identity.duplicates.forEach(d => {
-        html += '<div style="font-size:.82rem;padding:4px 0;color:#3E3229">&#9888; <strong>' + esc(d.type) + ':</strong> ' + esc(d.name) + ' (' + esc(d.email) + ')' + (d.has_account ? ' <span style="color:#8B3A3A;font-weight:700">HAS ACCOUNT</span>' : '') + '</div>';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:4px 0;color:#3E3229">';
+        html += '<span>&#9888; <strong>' + esc(d.type) + ':</strong> ' + esc(d.name) + ' (' + esc(d.email) + ')' + (d.has_account ? ' <span style="color:#8B3A3A;font-weight:700">HAS ACCOUNT</span>' : '') + '</span>';
+        if (d.has_account && d.user_id) {
+          html += '<button class="btn btn-sm btn-danger" data-merge-secondary="' + d.user_id + '" style="font-size:.7rem;padding:2px 8px">Merge Into This User</button>';
+        }
+        html += '</div>';
       });
       html += '</div>';
     }
@@ -3796,6 +3869,24 @@ async function showUserEditModal(user) {
   };
 
   // Save verification handler
+  // Merge button handlers
+  bg.querySelectorAll('[data-merge-secondary]').forEach(btn => {
+    btn.onclick = async () => {
+      const secondaryId = btn.getAttribute('data-merge-secondary');
+      if (!confirm('MERGE ACCOUNTS\\n\\nThis will absorb the duplicate account into THIS user (' + user.email + ').\\n\\nAll activity, applications, messages, and notes from the duplicate will be moved here. The duplicate account will be deleted.\\n\\nThis cannot be undone. Continue?')) return;
+      btn.disabled = true; btn.textContent = 'Merging...';
+      const res = await api('/admin/users/merge', { method: 'POST', body: JSON.stringify({ primary_id: user.id, secondary_id: parseInt(secondaryId) }) });
+      if (res.success) {
+        alert('Merge complete: ' + res.message + '\\n\\n' + (res.details || []).join(', '));
+        bg.remove();
+        renderApp();
+      } else {
+        alert('Merge failed: ' + (res.error || 'Unknown error'));
+        btn.disabled = false; btn.textContent = 'Merge Into This User';
+      }
+    };
+  });
+
   document.getElementById('saveVerifyBtn').onclick = async () => {
     const verification = {};
     trust.verification.items.forEach(item => {
