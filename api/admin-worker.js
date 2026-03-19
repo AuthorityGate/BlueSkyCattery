@@ -2325,8 +2325,8 @@ async function renderApp() {
   );
   app.appendChild(header);
 
-  const tabs = ['todo','dashboard','leads','applications','kittens','cats','social','settings','emails','users','audit'];
-  const tabLabels = { todo:'To Do', dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', social:'Social', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log' };
+  const tabs = ['todo','dashboard','leads','applications','kittens','cats','social','settings','emails','users','audit','help'];
+  const tabLabels = { todo:'To Do', dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', social:'Social', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log', help:'Help' };
 
   const nav = el('nav', { class: 'container tabs' });
   tabs.forEach(t => {
@@ -2348,6 +2348,7 @@ async function renderApp() {
   else if (currentTab === 'emails') await renderEmails(content);
   else if (currentTab === 'users') await renderUsers(content);
   else if (currentTab === 'audit') await renderAudit(content);
+  else if (currentTab === 'help') renderHelp(content);
 }
 
 // ---- Dashboard ----
@@ -4199,6 +4200,198 @@ async function showUserEditModal(user) {
     })});
     bg.remove();
     renderApp();
+  };
+}
+
+// ---- Help ----
+
+function renderHelp(container) {
+  const panel = el('div', { class: 'panel active' });
+
+  const sections = [
+    {
+      title: 'To Do / Action Center',
+      icon: '&#10003;',
+      items: [
+        ['What is it?', 'Your home base. Shows everything needing attention: new leads, pending applications, unanswered messages, unassigned photos, verification red flags, pending deposits, and upcoming automated emails.'],
+        ['New Leads', 'People who contacted you or submitted a reservation. Click Review to see their details. You can approve them (creates a portal account) or just reply.'],
+        ['Pending Applications', 'Applications that have been submitted but not yet reviewed. Click Review to open the full application with AI scoring, risk flags, and your decision tools.'],
+        ['Unanswered Messages', 'Inbound messages that you have not replied to yet. Click Reply to open the conversation, or Dismiss to remove it from the list.'],
+        ['Unassigned Photos', 'Photos emailed in that could not be matched to a cat or kitten by filename. Use the dropdown to assign them or click Del to remove.'],
+        ['Red Flags', 'Users who have failed one or more verification checks (phone disconnected, vet does not exist, etc). Click Review to investigate.'],
+      ]
+    },
+    {
+      title: 'Dashboard',
+      icon: '&#128202;',
+      items: [
+        ['What is it?', 'Overview of your cattery stats: total leads, applications, scores, kitten availability, conversion funnel, lead sources, and recent activity.'],
+      ]
+    },
+    {
+      title: 'Leads & Contacts',
+      icon: '&#128100;',
+      items: [
+        ['What is it?', 'Everyone who has contacted Blue Sky Cattery through any channel: contact form, reservation form, self-registration, newsletter signup, or waitlist.'],
+        ['Search', 'Type any name, email, phone number, or preference (e.g. "blue" or "velcro") to filter the list.'],
+        ['Approve a Lead', 'Click Approve to create a portal account for the lead. They will receive a welcome email with login credentials to fill out the full adoption application.'],
+        ['View / Reply', 'Click View to see the full lead profile, message history, and send an email directly from the admin portal.'],
+        ['Preferences', 'Waitlist signups can indicate their preferred sex, color, eye color, and personality type. These show as tags in the Preferences column.'],
+        ['Export', 'Click Export CSV to download all leads as a spreadsheet.'],
+      ]
+    },
+    {
+      title: 'Applications',
+      icon: '&#128203;',
+      items: [
+        ['What is it?', 'All adoption applications submitted through the portal. Applications are auto-scored by our AI grading system.'],
+        ['AI Scoring', 'Each application is scored 0-100 across categories: home environment, pet experience, breed knowledge, readiness, and more. The AI also flags risks and highlights strengths.'],
+        ['Top Candidates', 'Shows the highest-scored applicants per kitten so you can see who is the best match.'],
+        ['Review an Application', 'Click Review to see the full application, score breakdown, AI analysis, risk flags, and make your decision (approve, waitlist, or reject).'],
+        ['Re-analyze with AI', 'If you want a fresh AI analysis (e.g., after the applicant updated their profile), click Re-analyze in the review modal.'],
+      ]
+    },
+    {
+      title: 'Kittens & Litters',
+      icon: '&#128049;',
+      items: [
+        ['What is it?', 'Manage your litters and individual kittens. Track status, pricing, reservations, deposits, and go-home readiness.'],
+        ['Add a Litter', 'Click + New Litter. Enter the sire, dam, born date, go-home date, and number of kittens. Kittens are auto-created.'],
+        ['Edit a Kitten', 'Click Edit to update name, color, sex, price, status, reserved by, photos, deposit info, and notes.'],
+        ['Kitten Status', 'Available, Pending (awaiting deposit), Reserved (deposit received), or Sold.'],
+        ['Photos', 'Upload photos directly in the edit modal or email them to kittens@blueskycattery.com with filenames matching the kitten name (e.g., Hannah1.jpg). Photos are auto-optimized for web.'],
+        ['Deposit Tracking', 'In the edit modal: enter deposit amount, date received, payment method. Balance auto-calculates from the kitten price.'],
+        ['Go-Home Checklist', 'For reserved/sold kittens: 9-item checklist (spay/neuter, vaccinations, microchip, contract, etc). Each checkbox saves immediately.'],
+        ['Announce Litter', 'Click Announce Litter to email all interested leads and waitlist subscribers about the new litter.'],
+      ]
+    },
+    {
+      title: 'Kings & Queens (Cats)',
+      icon: '&#128049;',
+      items: [
+        ['What is it?', 'Manage your breeding cats. These show on the public website.'],
+        ['Add / Edit', 'Name, breed, role (king/queen), color, registration, bio, health tested status, sort order. Photos work the same as kittens.'],
+        ['Photos', 'Upload in the edit modal or email to kittens@blueskycattery.com with the cat name as filename (e.g., Samurai1.jpg).'],
+      ]
+    },
+    {
+      title: 'Social Media',
+      icon: '&#128247;',
+      items: [
+        ['What is it?', 'Post directly to Facebook and Instagram from the admin portal.'],
+        ['Setup', 'Enter your Facebook Page ID, Instagram Business ID, and Meta Page Access Token in Account Settings. One token works for both platforms. See the setup guide on the Social tab for step-by-step instructions.'],
+        ['Templates', 'Click a template (Breed Education, New Litter, Kitten Update, Alumni Story, Event, Cat Care Tip) to get a pre-written post you can customize.'],
+        ['Hashtags', 'Click any suggested hashtag to add it to your post.'],
+        ['Posting', 'Post to Facebook only, Instagram only, or both at once. Instagram requires a photo URL. You can copy photo URLs from the Kittens or Cats edit modals.'],
+      ]
+    },
+    {
+      title: 'User Management',
+      icon: '&#128101;',
+      items: [
+        ['What is it?', 'Manage all user accounts (applicants and admins). Search, edit, add notes, track trust ratings.'],
+        ['Search', 'Find users by name, email, phone, or notes content. Helps spot duplicate accounts.'],
+        ['Trust Rating', 'Each user has a two-part trust rating: Identity Risk (automated duplicate detection) and Verification Score (your manual checklist). Open Edit to see the full breakdown.'],
+        ['Verification Checklist', 'Rate each item Pass/Concern/Fail: email deliverable, phone works, vet exists, vet confirms pets, identity consistent, references check. Add detail notes for each (e.g., "Called Dr. Smith at 555-1234, confirmed 2 cats on file").'],
+        ['Activity Timeline', 'Log every interaction: calls, emails, vet checks, video visits. Each entry is timestamped automatically.'],
+        ['Admin Notes', 'Free-text notes field for quick observations. Searchable and synced to Brevo CRM.'],
+        ['Merge Accounts', 'If duplicate accounts are detected, click Merge Into This User in the Identity Flags section. All activity, applications, messages, and notes are moved to the primary account.'],
+        ['Message History', 'See all inbound/outbound messages from the user without leaving the edit modal.'],
+        ['Reset Password', 'Generates a new password and emails it to the user.'],
+      ]
+    },
+    {
+      title: 'Settings',
+      icon: '&#9881;',
+      items: [
+        ['What is it?', 'Site-wide configuration: cattery name, email, pricing, deposit amounts, and more. These values are used across the website and portal.'],
+        ['Add a Setting', 'Type a new key and value in the fields at the bottom and click Add. Then Save All Settings.'],
+      ]
+    },
+    {
+      title: 'Email Schedules',
+      icon: '&#9993;',
+      items: [
+        ['What is it?', 'Automated email sequences sent to kitten adopters after go-home: welcome home, vet visit reminder, spay/neuter, vaccinations, check-ins, and birthday.'],
+        ['Configure', 'Adjust days-after timing, toggle active/inactive, and send test emails to yourself.'],
+      ]
+    },
+    {
+      title: 'Email Photos (Automatic)',
+      icon: '&#128248;',
+      items: [
+        ['How it works', 'Email photos to kittens@blueskycattery.com from an admin email address (Deanna or Kevin). Name files after the cat or kitten: Hannah1.jpg, Hannah2.jpg, Samurai_front.jpg, etc.'],
+        ['Matching', 'The system strips numbers and underscores from the filename and matches to cat/kitten names. Hannah2.jpg matches kitten "Hannah". Chili_3.png matches cat "Chili".'],
+        ['Auto-optimization', 'All photos uploaded through the admin portal are automatically resized and optimized for web (max 1200px, 80% quality). Phone photos go from 5MB to ~300KB.'],
+        ['Unmatched photos', 'If a filename does not match any cat or kitten, the photo is saved as "unassigned" and appears on your To Do page. Assign it from there using the dropdown.'],
+        ['Confirmation email', 'After processing, you receive a report showing which photos matched and which did not.'],
+        ['Admin emails', 'Only emails from recognized admin addresses are processed: stuckeydeanna3@gmail.com, kkomlosy@gmail.com, deanna@blueskycattery.com.'],
+        ['Max photos per email', '3-4 photos per email (Brevo has a 20MB limit, phone photos are 3-5MB each).'],
+      ]
+    },
+    {
+      title: 'Applicant Portal',
+      icon: '&#127968;',
+      items: [
+        ['What is it?', 'The portal at portal.blueskycattery.com where applicants log in to fill out their adoption application, view litter info, manage their profile, and subscribe to notifications.'],
+        ['Self-Registration', 'Users can create their own account from the portal login page or during kitten reservation. Email verification is required before access.'],
+        ['Application Wizard', 'Multi-step form that auto-saves drafts and pre-fills from the user profile.'],
+        ['User Profile', 'Users can update their contact info (name, phone, address) independently of the application.'],
+        ['Subscriptions', 'Users can subscribe to the newsletter and litter waitlist with kitten preferences.'],
+      ]
+    },
+    {
+      title: 'Website (Public)',
+      icon: '&#127760;',
+      items: [
+        ['URL', 'blueskycattery.com — auto-deployed from GitHub.'],
+        ['Dynamic Content', 'Kings/Queens, kitten availability, pricing, and litter info are pulled live from the database via the portal API.'],
+        ['Contact Form', 'Creates a lead for admin review. Does NOT create a user account.'],
+        ['Reservation Form', 'Creates a lead AND a user account (with email verification). Redirects to the portal for the full application.'],
+        ['Waitlist Signup', 'Collects preferences (sex, color, eye color, personality) and subscribes to litter notifications.'],
+        ['My Portal Link', 'All pages have a "My Portal" link in the navigation.'],
+      ]
+    },
+  ];
+
+  let html = '<h2 style="margin:20px 0 4px">Help &amp; Documentation</h2>';
+  html += '<p style="color:#6B5B4B;margin-bottom:16px;font-size:.88rem">Search or browse everything the admin portal can do.</p>';
+
+  // Search
+  html += '<input type="text" id="helpSearch" placeholder="Search help... (e.g. photos, deposit, merge, vet)" style="width:100%;padding:10px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.9rem;margin-bottom:20px">';
+
+  // All sections
+  html += '<div id="helpContent">';
+  sections.forEach((sec, si) => {
+    html += '<div class="help-section" data-section="' + si + '" style="margin-bottom:16px">';
+    html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:14px 18px;border-radius:10px;border:1px solid rgba(212,197,169,.3)">';
+    html += '<h3 style="margin:0 0 10px;font-size:1rem;color:#A0522D">' + sec.icon + ' ' + sec.title + '</h3>';
+    sec.items.forEach(([q, a]) => {
+      html += '<div class="help-item" style="margin-bottom:8px;padding:6px 0;border-bottom:1px solid #f0ebe3">';
+      html += '<div style="font-size:.88rem;font-weight:600;color:#3E3229">' + q + '</div>';
+      html += '<div style="font-size:.82rem;color:#6B5B4B;margin-top:2px">' + a + '</div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  });
+  html += '</div>';
+
+  panel.innerHTML = html;
+  container.appendChild(panel);
+
+  // Search handler
+  document.getElementById('helpSearch').oninput = () => {
+    const q = document.getElementById('helpSearch').value.toLowerCase();
+    panel.querySelectorAll('.help-section').forEach(sec => {
+      if (!q) { sec.style.display = ''; sec.querySelectorAll('.help-item').forEach(i => i.style.display = ''); return; }
+      let sectionMatch = false;
+      sec.querySelectorAll('.help-item').forEach(item => {
+        const text = item.textContent.toLowerCase();
+        if (text.includes(q)) { item.style.display = ''; sectionMatch = true; }
+        else { item.style.display = 'none'; }
+      });
+      sec.style.display = sectionMatch ? '' : 'none';
+    });
   };
 }
 
