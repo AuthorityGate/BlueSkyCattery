@@ -2138,7 +2138,7 @@ async function reassignPhoto(photoId, callback) {
 
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
-  bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
+  // No click-outside-to-close - use Cancel/Close button only
   const modal = document.createElement('div');
   modal.className = 'modal';
   modal.style.maxWidth = '400px';
@@ -2796,7 +2796,7 @@ async function renderLeads(container) {
 
 async function showLeadModal(leadId) {
   const { lead, messages } = await api('/admin/leads/' + leadId);
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
+  const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
 
   let html = '<h2>' + esc(lead.name) + '</h2>';
@@ -2898,7 +2898,7 @@ async function showLeadModal(leadId) {
 }
 
 function showApprovalModal(name, email, password) {
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) { bg.remove(); renderApp(); }}});
+  const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
   modal.innerHTML = '<h2 style="color:#7A8B6F">Approved & Welcome Email Sent!</h2>' +
     '<p style="margin:12px 0">An applicant account has been created for <strong>' + esc(name) + '</strong> and a welcome email with login credentials has been sent automatically.</p>' +
@@ -3001,7 +3001,7 @@ async function showAppModal(appId) {
   const cats = app.score_breakdown ? JSON.parse(app.score_breakdown) : {};
   const appHighlights = app.highlights ? JSON.parse(app.highlights) : [];
   const appRisks = app.risks ? JSON.parse(app.risks) : [];
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
+  const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
 
   const gradeColor = app.score >= 80 ? '#7A8B6F' : app.score >= 65 ? '#D4AF37' : app.score >= 45 ? '#A0522D' : '#8B3A3A';
@@ -3222,7 +3222,7 @@ async function renderKittens(container) {
 }
 
 function showAddLitterModal() {
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
+  const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
   modal.innerHTML = '<h2>New Litter</h2>' +
     '<div class="form-grid">' +
@@ -3258,7 +3258,7 @@ function showAddLitterModal() {
 async function showKittenEditModal(kittenId, kitten) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
-  bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
+  // No click-outside-to-close - use Cancel/Close button only
 
   const modal = document.createElement('div');
   modal.className = 'modal';
@@ -3506,7 +3506,7 @@ async function renderCats(container) {
 
 async function showCatModal(cat) {
   const isEdit = !!cat;
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
+  const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
 
   // Fetch existing photos if editing
@@ -4029,7 +4029,7 @@ async function renderUsers(container) {
 }
 
 async function showUserEditModal(user) {
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
+  const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
 
   // Fetch trust rating and activity log
@@ -4232,15 +4232,26 @@ async function showUserEditModal(user) {
   document.getElementById('saveVerifyBtn').onclick = async () => {
     const verification = {};
     trust.verification.items.forEach(item => {
-      verification[item.key] = document.getElementById('verify_' + item.key).value;
+      const sel = document.getElementById('verify_' + item.key);
+      if (sel) verification[item.key] = sel.value;
       const detailEl = document.getElementById('verifyDetail_' + item.key);
       if (detailEl && detailEl.value) verification[item.key + '_detail'] = detailEl.value;
     });
     const btn = document.getElementById('saveVerifyBtn');
     btn.disabled = true; btn.textContent = 'Saving...';
-    await api('/admin/users/' + user.id + '/verify', { method: 'PUT', body: JSON.stringify({ verification }) });
-    bg.remove();
-    showUserEditModal(user);
+    try {
+      const res = await api('/admin/users/' + user.id + '/verify', { method: 'PUT', body: JSON.stringify({ verification }) });
+      if (res.success) {
+        btn.textContent = 'Saved!'; btn.style.background = '#7A8B6F';
+        setTimeout(() => { bg.remove(); showUserEditModal(user); }, 500);
+      } else {
+        alert('Save failed: ' + (res.error || 'Unknown error'));
+        btn.disabled = false; btn.textContent = 'Save Verification';
+      }
+    } catch(e) {
+      alert('Error saving: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Save Verification';
+    }
   };
 
   document.getElementById('saveUserBtn').onclick = async () => {
