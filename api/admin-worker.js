@@ -2003,6 +2003,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Blue Sky Cattery - Admin Portal</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐾</text></svg>">
 <meta name="robots" content="noindex, nofollow">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -3584,11 +3585,12 @@ async function renderSocial(container) {
   html += '<span style="font-size:.82rem;color:' + (isConfigured ? '#7A8B6F' : '#8B3A3A') + '">' + (isConfigured ? '&#10003; Connected' : '&#9888; Not configured') + '</span>';
   html += '</div>';
   html += '<div id="socialConfig" style="display:' + (isConfigured ? 'none' : 'block') + ';margin-top:12px">';
+  html += '<div style="padding:10px 14px;background:#F5EDE0;border-radius:6px;margin-bottom:12px;font-size:.82rem;color:#6B5B4B"><strong>Note:</strong> Facebook and Instagram both use the same Page Access Token (Meta owns both). You only need one token for both platforms.</div>';
   html += '<div class="form-grid">';
-  html += '<div class="field"><label>Facebook Page ID</label><input type="text" id="cfgFbPageId" value="' + esc(fbPageIdRow ? fbPageIdRow.value : '') + '" placeholder="e.g. 123456789012345"></div>';
-  html += '<div class="field"><label>Instagram User ID</label><input type="text" id="cfgIgUserId" value="' + esc(igUserIdRow ? igUserIdRow.value : '') + '" placeholder="e.g. 17841400000000"></div>';
+  html += '<div class="field"><label>Facebook Page ID</label><input type="text" id="cfgFbPageId" value="' + esc(fbPageIdRow ? fbPageIdRow.value : '') + '" placeholder="e.g. 123456789012345"><div style="font-size:.72rem;color:#6B5B4B;margin-top:2px">Found in your Facebook Page settings or URL</div></div>';
+  html += '<div class="field"><label>Instagram Business ID</label><input type="text" id="cfgIgUserId" value="' + esc(igUserIdRow ? igUserIdRow.value : '') + '" placeholder="e.g. 17841400000000"><div style="font-size:.72rem;color:#6B5B4B;margin-top:2px">IG must be a Business account linked to your FB Page</div></div>';
   html += '</div>';
-  html += '<div class="field"><label>Page Access Token</label><input type="password" id="cfgFbToken" value="' + esc(fbTokenRow ? fbTokenRow.value : '') + '" placeholder="Long-lived page access token" style="font-family:monospace;font-size:.82rem"></div>';
+  html += '<div class="field"><label>Meta Page Access Token <span style="font-size:.72rem;color:#6B5B4B">(works for both Facebook &amp; Instagram)</span></label><input type="password" id="cfgFbToken" value="' + esc(fbTokenRow ? fbTokenRow.value : '') + '" placeholder="Long-lived page access token from Meta Graph API Explorer" style="font-family:monospace;font-size:.82rem"></div>';
   html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center">';
   html += '<button class="btn btn-sm btn-primary" id="saveSocialConfig">Save Credentials</button>';
   html += '<button class="btn btn-sm btn-outline" id="testSocialConfig">Test Connection</button>';
