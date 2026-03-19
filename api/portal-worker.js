@@ -868,7 +868,15 @@ export default {
 
                   matched.push(filename + ' -> ' + entityType + ' ' + entityName);
                 } else {
-                  unmatched.push(filename + ' (no match for "' + baseName + '")');
+                  // Store as unassigned - admin can assign later from Todo page
+                  const ext = filename.split('.').pop().toLowerCase();
+                  const contentType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+                  const r2Key = 'unassigned/' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.' + ext;
+                  const binary = Uint8Array.from(atob(content), c => c.charCodeAt(0));
+                  await env.PHOTOS.put(r2Key, binary, { httpMetadata: { contentType } });
+                  await env.DB.prepare('INSERT INTO photos (entity_type, entity_id, r2_key, filename, sort_order, uploaded_at, source) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                    .bind('unassigned', 0, r2Key, filename, 0, now(), 'email').run();
+                  unmatched.push(filename + ' (saved as unassigned - assign in admin portal)');
                 }
               }
 

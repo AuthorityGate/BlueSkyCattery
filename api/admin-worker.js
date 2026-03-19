@@ -1349,13 +1349,21 @@ export default {
           upcomingEmails.sort((a, b) => a.days_until - b.days_until);
         } catch (e) { /* email_sent_log might not exist yet */ }
 
+        // Unassigned photos
+        let unassignedPhotos = [];
+        try {
+          const uPhotos = await env.DB.prepare("SELECT * FROM photos WHERE entity_type = 'unassigned' ORDER BY uploaded_at DESC").all();
+          unassignedPhotos = uPhotos.results.map(p => ({ ...p, url: 'https://portal.blueskycattery.com/photos/' + p.r2_key }));
+        } catch(e) {}
+
         return json({
           newLeads: newLeads.results,
           pendingApps: pendingApps.results,
           unassigned: unassigned.results,
           pendingKittens: pendingKittens.results,
           recentMessages: recentMessages.results,
-          upcomingEmails: upcomingEmails
+          upcomingEmails: upcomingEmails,
+          unassignedPhotos: unassignedPhotos
         });
       }
 
@@ -1477,6 +1485,47 @@ export default {
         await env.DB.prepare('UPDATE ' + table + ' SET photo_url = ?, updated_at = ? WHERE id = ?').bind(photoUrl, now(), photo.entity_id).run();
 
         return json({ success: true });
+      }
+
+      // Reassign a photo to a different cat/kitten (or from unassigned)
+      if (path.match(/^\/api\/admin\/photos\/\d+\/assign$/) && method === 'PUT') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const photoId = path.split('/')[4];
+        const data = await parseBody(request);
+        const { entity_type, entity_id } = data;
+        if (!entity_type || !entity_id || !['cat', 'kitten'].includes(entity_type)) {
+          return json({ error: 'entity_type (cat/kitten) and entity_id required' }, 400);
+        }
+
+        const photo = await env.DB.prepare('SELECT * FROM photos WHERE id = ?').bind(photoId).first();
+        if (!photo) return json({ error: 'Photo not found' }, 404);
+
+        // Get next sort_order for new entity
+        const maxSort = await env.DB.prepare('SELECT MAX(sort_order) as m FROM photos WHERE entity_type = ? AND entity_id = ?').bind(entity_type, entity_id).first();
+        const sortOrder = (maxSort && maxSort.m !== null) ? maxSort.m + 1 : 0;
+
+        await env.DB.prepare('UPDATE photos SET entity_type = ?, entity_id = ?, sort_order = ?, uploaded_at = ? WHERE id = ?')
+          .bind(entity_type, entity_id, sortOrder, now(), photoId).run();
+
+        // If this is the first photo for the entity, set as photo_url
+        if (sortOrder === 0) {
+          const table = entity_type === 'cat' ? 'cats' : 'kittens';
+          await env.DB.prepare('UPDATE ' + table + ' SET photo_url = ?, updated_at = ? WHERE id = ?')
+            .bind('https://portal.blueskycattery.com/photos/' + photo.r2_key, now(), entity_id).run();
+        }
+
+        await writeAuditLog(env.DB, session.user_id, 'photo_assigned', { photo_id: photoId, from: photo.entity_type + '/' + photo.entity_id, to: entity_type + '/' + entity_id });
+        return json({ success: true });
+      }
+
+      // Get unassigned photos
+      if (path === '/api/admin/photos/unassigned' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const photos = await env.DB.prepare("SELECT * FROM photos WHERE entity_type = 'unassigned' ORDER BY uploaded_at DESC").all();
+        const photoList = photos.results.map(p => ({ ...p, url: 'https://portal.blueskycattery.com/photos/' + p.r2_key }));
+        return json({ photos: photoList });
       }
 
       // ADMIN: AUDIT LOG
@@ -1684,6 +1733,39 @@ function resizeImage(file, maxWidth, quality) {
   });
 }
 
+async function reassignPhoto(photoId, callback) {
+  const [catsRes, littersRes] = await Promise.all([api('/admin/cats'), api('/admin/litters')]);
+  const cats = catsRes.cats || [];
+  const allKittens = [];
+  (littersRes.litters || []).forEach(l => {
+    (l.kittens || []).forEach(k => { allKittens.push({ id: k.id, name: k.name || 'Kitten #' + k.number, litter: l.litter_code }); });
+  });
+
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.maxWidth = '400px';
+  let opts = '<option value="">Select...</option><optgroup label="Cats">';
+  cats.forEach(c => { opts += '<option value="cat-' + c.id + '">' + c.name + ' (' + c.role + ')</option>'; });
+  opts += '</optgroup><optgroup label="Kittens">';
+  allKittens.forEach(k => { opts += '<option value="kitten-' + k.id + '">' + k.name + ' (' + k.litter + ')</option>'; });
+  opts += '</optgroup>';
+  modal.innerHTML = '<h2>Reassign Photo</h2><div class="field"><label>Move to:</label><select id="reassignTarget" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:6px">' + opts + '</select></div><div class="actions"><button class="btn btn-outline" id="reassignCancel">Cancel</button><button class="btn btn-primary" id="reassignSave">Move Photo</button></div>';
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+  document.getElementById('reassignCancel').onclick = () => bg.remove();
+  document.getElementById('reassignSave').onclick = async () => {
+    const val = document.getElementById('reassignTarget').value;
+    if (!val) return;
+    const [entityType, entityId] = val.split('-');
+    const res = await api('/admin/photos/' + photoId + '/assign', { method: 'PUT', body: JSON.stringify({ entity_type: entityType, entity_id: parseInt(entityId) }) });
+    bg.remove();
+    if (res.success && callback) callback();
+  };
+}
+
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...opts.headers };
   if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
@@ -1883,7 +1965,7 @@ async function renderTodo(container) {
   html += '<p style="color:#6B5B4B;margin-bottom:20px;font-size:.88rem">Everything that needs your attention, in one place.</p>';
 
   // Count total actions
-  const totalActions = (data.newLeads||[]).length + (data.pendingApps||[]).length + (data.recentMessages||[]).length + (data.pendingKittens||[]).length;
+  const totalActions = (data.newLeads||[]).length + (data.pendingApps||[]).length + (data.recentMessages||[]).length + (data.pendingKittens||[]).length + (data.unassignedPhotos||[]).length;
 
   if (totalActions === 0 && (data.upcomingEmails||[]).length === 0) {
     html += '<div style="text-align:center;padding:40px;color:#7A8B6F"><div style="font-size:2.5rem;margin-bottom:12px">&#10003;</div><h3>All caught up!</h3><p style="color:#6B5B4B">No pending actions right now.</p></div>';
@@ -1944,6 +2026,26 @@ async function renderTodo(container) {
     html += '</div>';
   }
 
+  // Unassigned Photos
+  if ((data.unassignedPhotos||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#C8849B;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.unassignedPhotos.length + '</div><h3 style="margin:0;font-size:1rem">Unassigned Photos</h3></div>';
+    html += '<p style="font-size:.82rem;color:#6B5B4B;margin-bottom:10px">These photos were emailed in but could not be matched to a cat or kitten. Assign or delete them below.</p>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:12px">';
+    data.unassignedPhotos.forEach(p => {
+      html += '<div style="width:160px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;overflow:hidden" data-unassigned-card="' + p.id + '">';
+      html += '<img src="' + esc(p.url) + '" style="width:100%;height:120px;object-fit:cover">';
+      html += '<div style="padding:8px">';
+      html += '<div style="font-size:.75rem;color:#6B5B4B;margin-bottom:6px;word-break:break-all">' + esc(p.filename) + '</div>';
+      html += '<select data-assign-select="' + p.id + '" style="width:100%;padding:4px 6px;border:1px solid #D4C5A9;border-radius:4px;font-size:.78rem;margin-bottom:6px"><option value="">Assign to...</option></select>';
+      html += '<div style="display:flex;gap:4px">';
+      html += '<button class="btn btn-sm btn-success" data-assign-btn="' + p.id + '" style="flex:1;font-size:.72rem" disabled>Assign</button>';
+      html += '<button class="btn btn-sm btn-danger" data-assign-del="' + p.id + '" style="font-size:.72rem">Del</button>';
+      html += '</div></div></div>';
+    });
+    html += '</div></div>';
+  }
+
   // Upcoming Automated Emails
   if ((data.upcomingEmails||[]).length > 0) {
     html += '<div style="margin-bottom:24px">';
@@ -1960,6 +2062,61 @@ async function renderTodo(container) {
 
   panel.innerHTML = html;
   container.appendChild(panel);
+
+  // Populate assign dropdowns for unassigned photos
+  if ((data.unassignedPhotos||[]).length > 0) {
+    (async () => {
+      const [catsRes, littersRes] = await Promise.all([api('/admin/cats'), api('/admin/litters')]);
+      const cats = catsRes.cats || [];
+      const allKittens = [];
+      (littersRes.litters || []).forEach(l => {
+        (l.kittens || []).forEach(k => { allKittens.push({ id: k.id, name: k.name || 'Kitten #' + k.number, litter: l.litter_code }); });
+      });
+
+      panel.querySelectorAll('[data-assign-select]').forEach(sel => {
+        let opts = '<option value="">Assign to...</option>';
+        opts += '<optgroup label="Cats">';
+        cats.forEach(c => { opts += '<option value="cat-' + c.id + '">' + esc(c.name) + ' (' + c.role + ')</option>'; });
+        opts += '</optgroup><optgroup label="Kittens">';
+        allKittens.forEach(k => { opts += '<option value="kitten-' + k.id + '">' + esc(k.name) + ' (' + k.litter + ')</option>'; });
+        opts += '</optgroup>';
+        sel.innerHTML = opts;
+
+        sel.onchange = () => {
+          const assignBtn = panel.querySelector('[data-assign-btn="' + sel.getAttribute('data-assign-select') + '"]');
+          if (assignBtn) assignBtn.disabled = !sel.value;
+        };
+      });
+
+      panel.querySelectorAll('[data-assign-btn]').forEach(btn => {
+        btn.onclick = async () => {
+          const photoId = btn.getAttribute('data-assign-btn');
+          const sel = panel.querySelector('[data-assign-select="' + photoId + '"]');
+          if (!sel || !sel.value) return;
+          const [entityType, entityId] = sel.value.split('-');
+          btn.disabled = true; btn.textContent = '...';
+          const res = await api('/admin/photos/' + photoId + '/assign', { method: 'PUT', body: JSON.stringify({ entity_type: entityType, entity_id: parseInt(entityId) }) });
+          if (res.success) {
+            const card = panel.querySelector('[data-unassigned-card="' + photoId + '"]');
+            if (card) card.remove();
+          } else {
+            alert(res.error || 'Failed');
+            btn.disabled = false; btn.textContent = 'Assign';
+          }
+        };
+      });
+
+      panel.querySelectorAll('[data-assign-del]').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('Delete this photo permanently?')) return;
+          const photoId = btn.getAttribute('data-assign-del');
+          await api('/admin/photos/' + photoId, { method: 'DELETE' });
+          const card = panel.querySelector('[data-unassigned-card="' + photoId + '"]');
+          if (card) card.remove();
+        };
+      });
+    })();
+  }
 
   // Attach dismiss handlers for messages
   panel.querySelectorAll('[data-todo-dismiss-msg]').forEach(btn => {
@@ -2639,6 +2796,7 @@ async function showKittenEditModal(kittenId, kitten) {
     photoHtml += '<div style="position:absolute;top:2px;right:2px;display:flex;gap:2px">';
     if (p.sort_order !== 0) photoHtml += '<button data-photo-primary="' + p.id + '" style="background:#D4AF37;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Set as primary">&#9733;</button>';
     photoHtml += '<button data-photo-del="' + p.id + '" style="background:#8B3A3A;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Delete">&#10005;</button>';
+    photoHtml += '<button data-photo-reassign="' + p.id + '" style="background:#87A5B4;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Reassign">&#8644;</button>';
     photoHtml += '</div></div>';
   });
   photoHtml += '</div>';
@@ -2700,6 +2858,10 @@ async function showKittenEditModal(kittenId, kitten) {
       bg.remove();
       showKittenEditModal(kittenId, kitten);
     };
+  });
+
+  bg.querySelectorAll('[data-photo-reassign]').forEach(btn => {
+    btn.onclick = () => reassignPhoto(btn.getAttribute('data-photo-reassign'), () => { bg.remove(); showKittenEditModal(kittenId, kitten); });
   });
 
   document.getElementById('saveKittenBtn').onclick = async () => {
@@ -2850,6 +3012,10 @@ async function showCatModal(cat) {
         bg.remove();
         showCatModal(cat);
       };
+    });
+
+    bg.querySelectorAll('[data-photo-reassign]').forEach(btn => {
+      btn.onclick = () => reassignPhoto(btn.getAttribute('data-photo-reassign'), () => { bg.remove(); showCatModal(cat); });
     });
   }
 
