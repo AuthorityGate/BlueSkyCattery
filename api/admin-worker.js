@@ -1551,7 +1551,7 @@ export default {
         // Ensure admin_notes column exists
         try { await env.DB.prepare("ALTER TABLE users ADD COLUMN admin_notes TEXT").run(); } catch(e) {}
 
-        let sql = 'SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1';
+        let sql = 'SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.verification, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1';
         const params = [];
         if (search) {
           sql += ' AND (LOWER(u.email) LIKE ? OR LOWER(COALESCE(l.name,\'\')) LIKE ? OR LOWER(COALESCE(l.phone,\'\')) LIKE ? OR LOWER(COALESCE(u.admin_notes,\'\')) LIKE ?)';
@@ -1587,6 +1587,142 @@ export default {
         }
 
         await writeAuditLog(env.DB, session.user_id, 'user_updated', { target_user_id: userId, changes: data });
+        return json({ success: true });
+      }
+
+      // Get trust rating for a user
+      if (path.match(/^\/api\/admin\/users\/\d+\/trust$/) && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const userId = path.split('/')[4];
+
+        // Ensure verification columns exist
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verification JSON").run(); } catch(e) {}
+
+        const user = await env.DB.prepare('SELECT u.*, l.name, l.phone, l.email as lead_email, l.home_address FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE u.id = ?').bind(userId).first();
+        if (!user) return json({ error: 'User not found' }, 404);
+
+        // ---- IDENTITY RISK: Duplicate Detection ----
+        const duplicates = [];
+        // Same phone, different email
+        if (user.phone) {
+          const phoneMatches = await env.DB.prepare('SELECT l.id, l.name, l.email, l.phone, l.source, u2.id as user_id FROM leads l LEFT JOIN users u2 ON u2.lead_id = l.id WHERE l.phone = ? AND l.email != ? AND l.phone IS NOT NULL').bind(user.phone, user.email).all();
+          phoneMatches.results.forEach(m => duplicates.push({ type: 'Same phone', name: m.name, email: m.email, has_account: !!m.user_id }));
+        }
+        // Same name, different email (fuzzy)
+        if (user.name) {
+          const nameMatches = await env.DB.prepare('SELECT l.id, l.name, l.email, l.phone, u2.id as user_id FROM leads l LEFT JOIN users u2 ON u2.lead_id = l.id WHERE LOWER(l.name) = LOWER(?) AND l.email != ?').bind(user.name, user.email).all();
+          nameMatches.results.forEach(m => duplicates.push({ type: 'Same name', name: m.name, email: m.email, phone: m.phone, has_account: !!m.user_id }));
+        }
+        // Same address, different email
+        if (user.home_address && user.home_address.length > 5) {
+          const addrMatches = await env.DB.prepare('SELECT l.id, l.name, l.email, u2.id as user_id FROM leads l LEFT JOIN users u2 ON u2.lead_id = l.id WHERE LOWER(l.home_address) = LOWER(?) AND l.email != ?').bind(user.home_address, user.email).all();
+          addrMatches.results.forEach(m => duplicates.push({ type: 'Same address', name: m.name, email: m.email, has_account: !!m.user_id }));
+        }
+
+        // Check for multiple applications with different responses
+        const allApps = await env.DB.prepare('SELECT id, full_name, email, phone, city_state, housing_type, score, status, created_at FROM applications WHERE user_id IN (SELECT u2.id FROM users u2 JOIN leads l2 ON u2.lead_id = l2.id WHERE l2.phone = ? OR LOWER(l2.name) = LOWER(?))').bind(user.phone || '___none___', user.name || '___none___').all();
+        const appInconsistencies = [];
+        if (allApps.results.length > 1) {
+          const first = allApps.results[0];
+          allApps.results.slice(1).forEach(a => {
+            if (a.housing_type && first.housing_type && a.housing_type !== first.housing_type) appInconsistencies.push('Housing type differs: ' + first.housing_type + ' vs ' + a.housing_type);
+            if (a.city_state && first.city_state && a.city_state.toLowerCase() !== first.city_state.toLowerCase()) appInconsistencies.push('Location differs: ' + first.city_state + ' vs ' + a.city_state);
+          });
+        }
+
+        // Identity risk score (0 = clean, higher = more risk)
+        let identityRisk = 0;
+        if (duplicates.length > 0) identityRisk += duplicates.length * 15;
+        if (duplicates.some(d => d.has_account)) identityRisk += 20; // Multiple actual accounts
+        if (appInconsistencies.length > 0) identityRisk += appInconsistencies.length * 10;
+        identityRisk = Math.min(100, identityRisk);
+
+        // ---- VERIFICATION SCORE: Admin-rated items ----
+        let verification = {};
+        try { verification = user.verification ? JSON.parse(user.verification) : {}; } catch(e) {}
+
+        const verifyItems = [
+          { key: 'email_works', label: 'Email deliverable', weight: 15 },
+          { key: 'phone_works', label: 'Phone number works', weight: 20 },
+          { key: 'vet_exists', label: 'Vet clinic exists', weight: 15 },
+          { key: 'vet_confirms_pet', label: 'Vet confirms pet history', weight: 20 },
+          { key: 'identity_consistent', label: 'Identity info consistent', weight: 15 },
+          { key: 'references_check', label: 'References / social media check', weight: 15 }
+        ];
+
+        // Calculate verification score
+        let verifiedPoints = 0, maxPoints = 0, checkedCount = 0;
+        verifyItems.forEach(item => {
+          maxPoints += item.weight;
+          const val = verification[item.key]; // 'pass', 'fail', 'concern', or undefined
+          if (val === 'pass') { verifiedPoints += item.weight; checkedCount++; }
+          else if (val === 'concern') { verifiedPoints += Math.round(item.weight * 0.5); checkedCount++; }
+          else if (val === 'fail') { checkedCount++; } // 0 points
+          // undefined = not checked yet
+        });
+
+        const verificationScore = maxPoints > 0 ? Math.round((verifiedPoints / maxPoints) * 100) : null;
+        const verificationStatus = checkedCount === 0 ? 'not_started' : checkedCount < verifyItems.length ? 'partial' : 'complete';
+
+        // ---- OVERALL TRUST RATING ----
+        let overallRating = 'limited';
+        let overallScore = null;
+        const app = await env.DB.prepare('SELECT score FROM applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').bind(userId).first();
+        const appScore = app ? app.score : null;
+
+        if (verificationStatus === 'not_started') {
+          overallRating = 'limited';
+          overallScore = null; // Can't compute without verification
+        } else {
+          // Weighted: 40% app score, 30% verification, 30% identity (inverted)
+          const identityClean = Math.max(0, 100 - identityRisk);
+          overallScore = Math.round(
+            (appScore || 50) * 0.4 +
+            (verificationScore || 50) * 0.3 +
+            identityClean * 0.3
+          );
+          if (overallScore >= 80) overallRating = 'trusted';
+          else if (overallScore >= 60) overallRating = 'moderate';
+          else if (overallScore >= 40) overallRating = 'caution';
+          else overallRating = 'high_risk';
+        }
+
+        return json({
+          userId,
+          identity: { risk: identityRisk, duplicates, inconsistencies: appInconsistencies, relatedApps: allApps.results.length },
+          verification: { status: verificationStatus, score: verificationScore, items: verifyItems.map(i => ({ ...i, value: verification[i.key] || 'not_checked' })), checkedCount },
+          overall: { rating: overallRating, score: overallScore, appScore },
+        });
+      }
+
+      // Save verification ratings for a user
+      if (path.match(/^\/api\/admin\/users\/\d+\/verify$/) && method === 'PUT') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const userId = path.split('/')[4];
+        const data = await parseBody(request);
+
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verification JSON").run(); } catch(e) {}
+
+        // Merge with existing verification data
+        const user = await env.DB.prepare('SELECT verification, email FROM users WHERE id = ?').bind(userId).first();
+        if (!user) return json({ error: 'User not found' }, 404);
+        let existing = {};
+        try { existing = user.verification ? JSON.parse(user.verification) : {}; } catch(e) {}
+        const merged = { ...existing, ...data.verification };
+
+        await env.DB.prepare('UPDATE users SET verification = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(merged), now(), userId).run();
+
+        // Sync to Brevo
+        const passCount = Object.values(merged).filter(v => v === 'pass').length;
+        const failCount = Object.values(merged).filter(v => v === 'fail').length;
+        const totalChecked = Object.values(merged).filter(v => v !== 'not_checked' && v !== undefined).length;
+        await updateBrevoContact(user.email, {
+          ADMIN_NOTES: (user.admin_notes || '') + (user.admin_notes ? ' | ' : '') + 'Verified: ' + passCount + '/' + totalChecked + ' pass, ' + failCount + ' fail'
+        }, [], []);
+
+        await writeAuditLog(env.DB, session.user_id, 'user_verification_updated', { target_user_id: userId, verification: merged });
         return json({ success: true });
       }
 
@@ -3202,12 +3338,26 @@ async function renderUsers(container) {
 
   html += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (users||[]).length + ' user(s)' + (userSearch ? ' matching "' + esc(userSearch) + '"' : '') + '</div>';
 
-  html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Notes</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Trust</th><th>Role</th><th>Status</th><th>Notes</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
   (users || []).forEach(u => {
+    // Quick trust indicator from verification JSON
+    let trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#87A5B4;color:#fff">Limited</span>';
+    try {
+      const v = u.verification ? JSON.parse(u.verification) : {};
+      const vals = Object.values(v).filter(x => x && x !== 'not_checked');
+      if (vals.length > 0) {
+        const passes = vals.filter(x => x === 'pass').length;
+        const fails = vals.filter(x => x === 'fail').length;
+        if (fails > 0) trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#8B3A3A;color:#fff">&#9888; Flags</span>';
+        else if (passes === vals.length && vals.length >= 4) trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#7A8B6F;color:#fff">Trusted</span>';
+        else trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#D4AF37;color:#3E3229">' + passes + '/' + vals.length + '</span>';
+      }
+    } catch(e) {}
     html += '<tr>';
     html += '<td><strong>' + esc(u.lead_name || '---') + '</strong></td>';
     html += '<td>' + esc(u.email) + '</td>';
     html += '<td>' + esc(u.lead_phone || '---') + '</td>';
+    html += '<td>' + trustBadge + '</td>';
     html += '<td><span style="padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:' + (u.role === 'admin' ? '#A0522D' : '#87A5B4') + ';color:#fff;text-transform:uppercase">' + esc(u.role) + '</span></td>';
     html += '<td>' + badge(u.status) + '</td>';
     html += '<td style="max-width:200px;font-size:.78rem;color:#6B5B4B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(u.admin_notes || '') + '">' + esc(u.admin_notes ? (u.admin_notes.length > 40 ? u.admin_notes.slice(0,40) + '...' : u.admin_notes) : '---') + '</td>';
@@ -3258,26 +3408,103 @@ async function renderUsers(container) {
   });
 }
 
-function showUserEditModal(user) {
+async function showUserEditModal(user) {
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
   const modal = el('div', { class: 'modal' });
-  modal.innerHTML = '<h2>Edit User</h2>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">' +
-    '<div class="field"><label>Name</label><div class="value" style="font-weight:700">' + esc(user.lead_name || '---') + '</div></div>' +
-    '<div class="field"><label>Email</label><div class="value">' + esc(user.email) + '</div></div>' +
-    '<div class="field"><label>Phone</label><div class="value">' + esc(user.lead_phone || '---') + '</div></div>' +
-    '<div class="field"><label>Created</label><div class="value">' + esc(user.created_at || '') + '</div></div>' +
-    '</div>' +
-    (user.lead_id ? '<div style="font-size:.78rem;color:#6B5B4B;margin-bottom:12px">Lead ID: ' + user.lead_id + ' &mdash; <a href="#" style="color:#A0522D" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ');return false">View Lead</a></div>' : '') +
-    '<div class="form-grid">' +
-    '<div class="field"><label>Role</label><select id="euRole"><option value="applicant"' + (user.role === 'applicant' ? ' selected' : '') + '>Applicant</option><option value="admin"' + (user.role === 'admin' ? ' selected' : '') + '>Admin</option></select></div>' +
-    '<div class="field"><label>Status</label><select id="euStatus"><option value="active"' + (user.status === 'active' ? ' selected' : '') + '>Active</option><option value="suspended"' + (user.status === 'suspended' ? ' selected' : '') + '>Suspended</option><option value="inactive"' + (user.status === 'inactive' ? ' selected' : '') + '>Inactive</option></select></div>' +
-    '</div>' +
-    '<div class="field" style="margin-top:12px"><label>Admin Notes</label><textarea id="euNotes" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem" placeholder="Call notes, observations, follow-up reminders...">' + esc(user.admin_notes || '') + '</textarea></div>' +
-    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
 
+  // Fetch trust rating
+  const trust = await api('/admin/users/' + user.id + '/trust');
+
+  // Overall rating badge
+  const ratingColors = { trusted: '#7A8B6F', moderate: '#D4AF37', caution: '#A0522D', high_risk: '#8B3A3A', limited: '#87A5B4' };
+  const ratingLabels = { trusted: 'Trusted', moderate: 'Moderate', caution: 'Caution', high_risk: 'High Risk', limited: 'Limited (App Only)' };
+  const rc = ratingColors[trust.overall.rating] || '#6B5B4B';
+  const rl = ratingLabels[trust.overall.rating] || trust.overall.rating;
+
+  let html = '<h2>Edit User</h2>';
+
+  // Contact info header
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
+  html += '<div class="field"><label>Name</label><div class="value" style="font-weight:700">' + esc(user.lead_name || '---') + '</div></div>';
+  html += '<div class="field"><label>Email</label><div class="value">' + esc(user.email) + '</div></div>';
+  html += '<div class="field"><label>Phone</label><div class="value">' + esc(user.lead_phone || '---') + '</div></div>';
+  html += '<div class="field"><label>Created</label><div class="value">' + esc(user.created_at || '') + '</div></div>';
+  html += '</div>';
+  if (user.lead_id) html += '<div style="font-size:.78rem;color:#6B5B4B;margin-bottom:12px">Lead ID: ' + user.lead_id + ' &mdash; <a href="#" style="color:#A0522D" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ');return false">View Lead</a></div>';
+
+  // ---- OVERALL TRUST RATING BAR ----
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:16px;border-radius:10px;border:1px solid rgba(212,197,169,.3);margin-bottom:16px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong style="font-size:.9rem">Trust Rating</strong>';
+  html += '<span style="background:' + rc + ';color:#fff;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700">' + rl + (trust.overall.score !== null ? ' (' + trust.overall.score + ')' : '') + '</span></div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.78rem">';
+  html += '<div style="text-align:center"><div style="color:#6B5B4B">App Score</div><strong style="font-size:1.1rem">' + (trust.overall.appScore !== null ? trust.overall.appScore : '---') + '</strong></div>';
+  html += '<div style="text-align:center"><div style="color:#6B5B4B">Verification</div><strong style="font-size:1.1rem;color:' + (trust.verification.score !== null ? (trust.verification.score >= 70 ? '#7A8B6F' : trust.verification.score >= 40 ? '#D4AF37' : '#8B3A3A') : '#87A5B4') + '">' + (trust.verification.score !== null ? trust.verification.score + '%' : 'Not started') + '</strong></div>';
+  html += '<div style="text-align:center"><div style="color:#6B5B4B">Identity Risk</div><strong style="font-size:1.1rem;color:' + (trust.identity.risk === 0 ? '#7A8B6F' : trust.identity.risk <= 30 ? '#D4AF37' : '#8B3A3A') + '">' + (trust.identity.risk === 0 ? 'Clean' : trust.identity.risk + '%') + '</strong></div>';
+  html += '</div></div>';
+
+  // ---- IDENTITY RISK SECTION ----
+  if (trust.identity.duplicates.length > 0 || trust.identity.inconsistencies.length > 0) {
+    html += '<div style="background:rgba(139,58,58,.05);border:1px solid rgba(139,58,58,.15);padding:12px;border-radius:8px;margin-bottom:12px">';
+    html += '<strong style="color:#8B3A3A;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">Identity Flags</strong>';
+    if (trust.identity.duplicates.length > 0) {
+      html += '<div style="margin-top:8px">';
+      trust.identity.duplicates.forEach(d => {
+        html += '<div style="font-size:.82rem;padding:4px 0;color:#3E3229">&#9888; <strong>' + esc(d.type) + ':</strong> ' + esc(d.name) + ' (' + esc(d.email) + ')' + (d.has_account ? ' <span style="color:#8B3A3A;font-weight:700">HAS ACCOUNT</span>' : '') + '</div>';
+      });
+      html += '</div>';
+    }
+    if (trust.identity.inconsistencies.length > 0) {
+      trust.identity.inconsistencies.forEach(i => {
+        html += '<div style="font-size:.82rem;padding:4px 0;color:#8B3A3A">&#9888; ' + esc(i) + '</div>';
+      });
+    }
+    html += '</div>';
+  }
+
+  // ---- VERIFICATION CHECKLIST ----
+  html += '<div style="margin-bottom:12px"><strong style="font-size:.88rem">Verification Checklist</strong> <span style="font-size:.75rem;color:#6B5B4B">(' + trust.verification.checkedCount + '/' + trust.verification.items.length + ' checked)</span></div>';
+  trust.verification.items.forEach(item => {
+    const val = item.value;
+    const selectId = 'verify_' + item.key;
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:6px 10px;background:#FDF9F3;border-radius:6px;border:1px solid #e8e2d8">';
+    html += '<select id="' + selectId + '" style="padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.78rem;width:120px">';
+    html += '<option value="not_checked"' + (val === 'not_checked' ? ' selected' : '') + '>Not checked</option>';
+    html += '<option value="pass"' + (val === 'pass' ? ' selected' : '') + '>&#10003; Pass</option>';
+    html += '<option value="concern"' + (val === 'concern' ? ' selected' : '') + '>&#9888; Concern</option>';
+    html += '<option value="fail"' + (val === 'fail' ? ' selected' : '') + '>&#10005; Fail</option>';
+    html += '</select>';
+    html += '<span style="font-size:.85rem;flex:1">' + esc(item.label) + '</span>';
+    html += '<span style="font-size:.72rem;color:#6B5B4B">(' + item.weight + ' pts)</span>';
+    html += '</div>';
+  });
+  html += '<button class="btn btn-sm btn-info" id="saveVerifyBtn" style="margin-top:6px">Save Verification</button>';
+
+  // Role/Status
+  html += '<div class="form-grid" style="margin-top:16px">';
+  html += '<div class="field"><label>Role</label><select id="euRole"><option value="applicant"' + (user.role === 'applicant' ? ' selected' : '') + '>Applicant</option><option value="admin"' + (user.role === 'admin' ? ' selected' : '') + '>Admin</option></select></div>';
+  html += '<div class="field"><label>Status</label><select id="euStatus"><option value="active"' + (user.status === 'active' ? ' selected' : '') + '>Active</option><option value="suspended"' + (user.status === 'suspended' ? ' selected' : '') + '>Suspended</option><option value="inactive"' + (user.status === 'inactive' ? ' selected' : '') + '>Inactive</option></select></div>';
+  html += '</div>';
+
+  // Notes
+  html += '<div class="field" style="margin-top:12px"><label>Admin Notes</label><textarea id="euNotes" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem" placeholder="Call notes, observations, follow-up reminders...">' + esc(user.admin_notes || '') + '</textarea></div>';
+  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
+
+  modal.innerHTML = html;
   bg.appendChild(modal);
   document.body.appendChild(bg);
+
+  // Save verification handler
+  document.getElementById('saveVerifyBtn').onclick = async () => {
+    const verification = {};
+    trust.verification.items.forEach(item => {
+      verification[item.key] = document.getElementById('verify_' + item.key).value;
+    });
+    const btn = document.getElementById('saveVerifyBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    await api('/admin/users/' + user.id + '/verify', { method: 'PUT', body: JSON.stringify({ verification }) });
+    bg.remove();
+    showUserEditModal(user); // Refresh to show updated scores
+  };
 
   document.getElementById('saveUserBtn').onclick = async () => {
     await api('/admin/users/' + user.id, { method: 'PUT', body: JSON.stringify({
