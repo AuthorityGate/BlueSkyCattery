@@ -3794,6 +3794,7 @@ async function showUserEditModal(user) {
   html += '<strong style="font-size:.9rem">Activity Timeline</strong>';
   // Quick-add bar
   html += '<div style="display:flex;gap:8px;margin-top:10px;margin-bottom:12px">';
+  html += '<div style="display:flex;gap:8px;align-items:center">';
   html += '<select id="activityType" style="padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px;font-size:.84rem">';
   html += '<option value="call">&#9742; Call</option>';
   html += '<option value="email">&#9993; Email</option>';
@@ -3801,8 +3802,9 @@ async function showUserEditModal(user) {
   html += '<option value="vet_check">&#9877; Vet Check</option>';
   html += '<option value="video_visit">&#9654; Video Visit</option>';
   html += '</select>';
-  html += '<input id="activityNote" type="text" placeholder="What happened? e.g. Called, spoke 10 min about kitten care..." style="flex:1;min-width:0;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;background:#fff">';
   html += '<button class="btn btn-sm btn-primary" id="addActivityBtn" style="white-space:nowrap">+ Add</button>';
+  html += '</div>';
+  html += '<textarea id="activityNote" rows="2" placeholder="What happened? e.g. Called, spoke 10 min about kitten care, discussed indoor setup..." style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;background:#fff;margin-top:6px;resize:vertical"></textarea>';
   html += '</div>';
   // Timeline entries
   html += '<div id="activityTimeline" style="max-height:300px;overflow-y:auto">';
