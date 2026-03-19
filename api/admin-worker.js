@@ -603,13 +603,26 @@ export default {
       if (path === '/api/auth/forgot-password' && method === 'POST') {
         const { email } = await parseBody(request);
         if (!email) return json({ error: 'Email required' }, 400);
-        const user = await env.DB.prepare("SELECT * FROM users WHERE email = ? AND status = 'active' AND role = 'admin'").bind(email).first();
+        // Find admin by email (case-insensitive), also check linked lead email
+        let user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND status = 'active' AND role = 'admin'").bind(email).first();
+        if (!user) {
+          // Try finding by lead email (e.g., stuckeydeanna3@gmail.com -> lead -> user)
+          const lead = await env.DB.prepare('SELECT id FROM leads WHERE LOWER(email) = LOWER(?)').bind(email).first();
+          if (lead) {
+            user = await env.DB.prepare("SELECT * FROM users WHERE lead_id = ? AND status = 'active' AND role = 'admin'").bind(lead.id).first();
+          }
+        }
         if (!user) return json({ success: true, message: 'If an admin account exists, a reset link has been sent.' });
         const resetToken = generateToken();
         const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
         await env.DB.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').bind(resetToken, expires, user.id).run();
-        await sendEmail(email, 'Blue Sky Cattery Admin - Password Reset',
-          'You requested a password reset for your Blue Sky Cattery admin account.\n\nClick this link to reset your password (expires in 1 hour):\nhttps://admin.blueskycattery.com/?reset=' + resetToken + '\n\nIf you did not request this, please secure your account immediately.\n\n- Blue Sky Cattery', user.email);
+        // Send to BOTH the account email and the requested email
+        const resetUrl = 'https://admin.blueskycattery.com/?reset=' + resetToken;
+        const resetBody = 'You requested a password reset for your Blue Sky Cattery admin account.\n\nClick this link to reset your password (expires in 1 hour):\n' + resetUrl + '\n\nIf you did not request this, please secure your account immediately.\n\n- Blue Sky Cattery';
+        await sendEmail(user.email, 'Blue Sky Cattery Admin - Password Reset', resetBody, user.email);
+        if (email.toLowerCase() !== user.email.toLowerCase()) {
+          await sendEmail(email, 'Blue Sky Cattery Admin - Password Reset', resetBody, email);
+        }
         return json({ success: true, message: 'If an admin account exists, a reset link has been sent.' });
       }
 
