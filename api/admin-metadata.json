@@ -1,1 +1,1 @@
-{"main_module":"admin-worker.js","bindings":[{"type":"d1","name":"DB","id":"f9518021-2874-49da-b9bd-5d50853545c7"},{"type":"ai","name":"AI"}],"compatibility_date":"2024-01-01","compatibility_flags":["nodejs_compat"]}
+{"main_module":"admin-worker.js","bindings":[{"type":"d1","name":"DB","id":"f9518021-2874-49da-b9bd-5d50853545c7"},{"type":"ai","name":"AI"},{"type":"r2_bucket","name":"PHOTOS","bucket_name":"cattery-photos"}],"compatibility_date":"2024-01-01","compatibility_flags":["nodejs_compat"]}

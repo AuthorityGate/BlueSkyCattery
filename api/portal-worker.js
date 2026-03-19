@@ -806,14 +806,100 @@ export default {
           const fromEmail = (item.From || item.from || {}).Address || (item.From || item.from || '');
           const subject = item.Subject || item.subject || 'Reply';
           const body = item.ExtractedMarkdownMessage || item.RawTextBody || item.rawTextBody || '';
+          const attachments = item.Attachments || item.attachments || [];
+
+          // Check for image attachments from admin emails
+          const imageAttachments = attachments.filter(a => {
+            const ct = (a.ContentType || a.contentType || '').toLowerCase();
+            return ct.startsWith('image/');
+          });
+
+          // Process photo attachments - match filenames to kitten/cat names
+          if (imageAttachments.length > 0) {
+            const adminEmails = ['deanna@blueskycattery.com', 'kkomlosy@gmail.com', 'stuckeydeanna3@gmail.com'];
+            const isAdmin = adminEmails.includes(fromEmail.toLowerCase());
+
+            if (isAdmin) {
+              // Ensure photos table exists
+              try { await env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')').run(); } catch(e) {}
+
+              const matched = [];
+              const unmatched = [];
+
+              for (const att of imageAttachments) {
+                const filename = att.Name || att.name || 'photo.jpg';
+                const content = att.Content || att.content || '';
+                if (!content) { unmatched.push(filename + ' (no data)'); continue; }
+
+                // Extract name from filename: "Hannah2.jpg" -> "Hannah", "Chili_3.png" -> "Chili"
+                const baseName = filename.replace(/\.[^.]+$/, '').replace(/[\d_\-\s]+$/, '').trim();
+
+                // Try to match to kitten first, then cat
+                let entityType = null, entityId = null, entityName = null;
+                const kitten = await env.DB.prepare('SELECT id, name FROM kittens WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
+                if (kitten) {
+                  entityType = 'kitten'; entityId = kitten.id; entityName = kitten.name;
+                } else {
+                  const cat = await env.DB.prepare('SELECT id, name FROM cats WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
+                  if (cat) { entityType = 'cat'; entityId = cat.id; entityName = cat.name; }
+                }
+
+                if (entityType && entityId) {
+                  const ext = filename.split('.').pop().toLowerCase();
+                  const contentType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+                  const r2Key = entityType + 's/' + entityId + '/' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.' + ext;
+
+                  // Decode and upload to R2
+                  const binary = Uint8Array.from(atob(content), c => c.charCodeAt(0));
+                  await env.PHOTOS.put(r2Key, binary, { httpMetadata: { contentType } });
+
+                  // Insert photo record
+                  const maxSort = await env.DB.prepare('SELECT MAX(sort_order) as m FROM photos WHERE entity_type = ? AND entity_id = ?').bind(entityType, entityId).first();
+                  const sortOrder = (maxSort && maxSort.m !== null) ? maxSort.m + 1 : 0;
+                  await env.DB.prepare('INSERT INTO photos (entity_type, entity_id, r2_key, filename, sort_order, uploaded_at, source) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                    .bind(entityType, entityId, r2Key, filename, sortOrder, now(), 'email').run();
+
+                  // Update entity photo_url if first photo
+                  if (sortOrder === 0) {
+                    const table = entityType === 'cat' ? 'cats' : 'kittens';
+                    await env.DB.prepare('UPDATE ' + table + ' SET photo_url = ?, updated_at = ? WHERE id = ?')
+                      .bind('https://portal.blueskycattery.com/photos/' + r2Key, now(), entityId).run();
+                  }
+
+                  matched.push(filename + ' -> ' + entityType + ' ' + entityName);
+                } else {
+                  unmatched.push(filename + ' (no match for "' + baseName + '")');
+                }
+              }
+
+              // Send confirmation back to sender
+              let report = 'Photo intake processed ' + imageAttachments.length + ' image(s).\n\n';
+              if (matched.length) report += 'MATCHED:\n' + matched.map(m => '  ✓ ' + m).join('\n') + '\n\n';
+              if (unmatched.length) report += 'NOT MATCHED (upload manually via admin portal):\n' + unmatched.map(u => '  ✗ ' + u).join('\n') + '\n';
+              report += '\n---\nManage all photos: https://admin.blueskycattery.com';
+
+              await sendEmail(fromEmail, 'Photo Upload Report', report, 'Admin');
+
+              // Still process any text message content as a regular inbound
+              if (body && body.trim().length > 20) {
+                const lead = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(fromEmail).first();
+                if (lead) {
+                  await env.DB.prepare('INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)')
+                    .bind(lead.id, 'inbound_reply', subject, body, now()).run();
+                }
+              }
+
+              continue; // Skip normal reply processing for photo emails
+            }
+          }
+
+          // Normal reply processing (non-photo emails)
           if (fromEmail) {
-            // Find the lead by email
             const lead = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(fromEmail).first();
             if (lead) {
               await env.DB.prepare('INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)')
                 .bind(lead.id, 'inbound_reply', subject, body, now()).run();
             }
-            // Also forward to Deanna so she sees it in Gmail too
             await sendEmail('Deanna@blueskycattery.com', 'Reply from ' + fromEmail + ': ' + subject,
               'Reply received from: ' + fromEmail + '\nSubject: ' + subject + '\n\n' + body + '\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
           }
@@ -1133,6 +1219,38 @@ export default {
         if (!session) return json({ error: 'Not authenticated' }, 401);
         const app = await env.DB.prepare('SELECT id, user_id, kitten_preference, full_name, email, phone, city_state, housing_type, status, admin_notes, created_at, updated_at FROM applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').bind(session.user_id).first();
         return json({ application: app });
+      }
+
+      // =====================
+      // PHOTO SERVING FROM R2
+      // =====================
+
+      if (path.startsWith('/photos/')) {
+        const key = path.slice(8); // strip /photos/
+        if (!key) return new Response('Not found', { status: 404 });
+        const obj = await env.PHOTOS.get(key);
+        if (!obj) return new Response('Not found', { status: 404 });
+        return new Response(obj.body, {
+          headers: {
+            'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'Access-Control-Allow-Origin': '*',
+          }
+        });
+      }
+
+      // Public photos list (for website)
+      if (path.match(/^\/api\/photos\/(cat|kitten)\/\d+$/) && method === 'GET') {
+        const parts = path.split('/');
+        const entityType = parts[3];
+        const entityId = parts[4];
+        const photos = await env.DB.prepare('SELECT id, r2_key, sort_order FROM photos WHERE entity_type = ? AND entity_id = ? ORDER BY sort_order ASC').bind(entityType, entityId).all();
+        const photoList = photos.results.map(p => ({
+          id: p.id,
+          url: 'https://portal.blueskycattery.com/photos/' + p.r2_key,
+          sort_order: p.sort_order
+        }));
+        return json({ photos: photoList });
       }
 
       // =====================

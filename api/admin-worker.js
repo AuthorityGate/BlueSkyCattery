@@ -538,6 +538,11 @@ export default {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS grading_config (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, key TEXT, value TEXT, updated_at TEXT)').run();
     } catch (e) { /* table exists */ }
 
+    // Ensure photos table exists
+    try {
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')').run();
+    } catch (e) { /* table exists */ }
+
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -1364,6 +1369,116 @@ export default {
         return json({ success: true });
       }
 
+      // =====================
+      // ADMIN: PHOTOS
+      // =====================
+
+      // Upload photos for a cat or kitten
+      if (path === '/api/admin/photos/upload' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const data = await parseBody(request);
+        const { entity_type, entity_id, photos } = data;
+
+        if (!entity_type || !entity_id || !photos || !photos.length) {
+          return json({ error: 'entity_type, entity_id, and photos[] required' }, 400);
+        }
+        if (!['cat', 'kitten'].includes(entity_type)) {
+          return json({ error: 'entity_type must be cat or kitten' }, 400);
+        }
+
+        const results = [];
+        for (const photo of photos) {
+          if (!photo.data) continue;
+          const ext = (photo.filename || 'photo.jpg').split('.').pop().toLowerCase();
+          const contentType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+          const timestamp = Date.now();
+          const r2Key = entity_type + 's/' + entity_id + '/' + timestamp + '.' + ext;
+
+          // Decode base64 and upload to R2
+          const binary = Uint8Array.from(atob(photo.data), c => c.charCodeAt(0));
+          await env.PHOTOS.put(r2Key, binary, { httpMetadata: { contentType } });
+
+          // Get current max sort_order
+          const maxSort = await env.DB.prepare('SELECT MAX(sort_order) as m FROM photos WHERE entity_type = ? AND entity_id = ?').bind(entity_type, entity_id).first();
+          const sortOrder = (maxSort && maxSort.m !== null) ? maxSort.m + 1 : 0;
+
+          await env.DB.prepare('INSERT INTO photos (entity_type, entity_id, r2_key, filename, sort_order, uploaded_at, source) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .bind(entity_type, entity_id, r2Key, photo.filename || 'photo.' + ext, sortOrder, now(), 'admin').run();
+
+          // If this is the first photo (sort_order 0), update the entity's photo_url
+          const photoUrl = 'https://portal.blueskycattery.com/photos/' + r2Key;
+          if (sortOrder === 0) {
+            const table = entity_type === 'cat' ? 'cats' : 'kittens';
+            await env.DB.prepare('UPDATE ' + table + ' SET photo_url = ?, updated_at = ? WHERE id = ?').bind(photoUrl, now(), entity_id).run();
+          }
+
+          results.push({ r2Key, filename: photo.filename, url: photoUrl });
+        }
+
+        await writeAuditLog(env.DB, session.user_id, 'photos_uploaded', { entity_type, entity_id, count: results.length });
+        return json({ success: true, uploaded: results });
+      }
+
+      // List photos for a cat or kitten
+      if (path.match(/^\/api\/admin\/photos\/(cat|kitten)\/\d+$/) && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const parts = path.split('/');
+        const entityType = parts[4];
+        const entityId = parts[5];
+        const photos = await env.DB.prepare('SELECT * FROM photos WHERE entity_type = ? AND entity_id = ? ORDER BY sort_order ASC').bind(entityType, entityId).all();
+        const photoList = photos.results.map(p => ({
+          ...p,
+          url: 'https://portal.blueskycattery.com/photos/' + p.r2_key
+        }));
+        return json({ photos: photoList });
+      }
+
+      // Delete a photo
+      if (path.match(/^\/api\/admin\/photos\/\d+$/) && method === 'DELETE') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const photoId = path.split('/').pop();
+        const photo = await env.DB.prepare('SELECT * FROM photos WHERE id = ?').bind(photoId).first();
+        if (!photo) return json({ error: 'Photo not found' }, 404);
+
+        // Delete from R2
+        await env.PHOTOS.delete(photo.r2_key);
+        await env.DB.prepare('DELETE FROM photos WHERE id = ?').bind(photoId).run();
+
+        // If this was the primary photo, update entity's photo_url to next photo or null
+        if (photo.sort_order === 0) {
+          const next = await env.DB.prepare('SELECT r2_key FROM photos WHERE entity_type = ? AND entity_id = ? ORDER BY sort_order ASC LIMIT 1').bind(photo.entity_type, photo.entity_id).first();
+          const table = photo.entity_type === 'cat' ? 'cats' : 'kittens';
+          const newUrl = next ? 'https://portal.blueskycattery.com/photos/' + next.r2_key : null;
+          await env.DB.prepare('UPDATE ' + table + ' SET photo_url = ?, updated_at = ? WHERE id = ?').bind(newUrl, now(), photo.entity_id).run();
+        }
+
+        await writeAuditLog(env.DB, session.user_id, 'photo_deleted', { photo_id: photoId, r2_key: photo.r2_key });
+        return json({ success: true });
+      }
+
+      // Set a photo as primary
+      if (path.match(/^\/api\/admin\/photos\/\d+\/primary$/) && method === 'PUT') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const photoId = path.split('/')[4];
+        const photo = await env.DB.prepare('SELECT * FROM photos WHERE id = ?').bind(photoId).first();
+        if (!photo) return json({ error: 'Photo not found' }, 404);
+
+        // Reset all sort_orders for this entity, set this one to 0
+        await env.DB.prepare('UPDATE photos SET sort_order = sort_order + 1 WHERE entity_type = ? AND entity_id = ?').bind(photo.entity_type, photo.entity_id).run();
+        await env.DB.prepare('UPDATE photos SET sort_order = 0 WHERE id = ?').bind(photoId).run();
+
+        // Update entity photo_url
+        const photoUrl = 'https://portal.blueskycattery.com/photos/' + photo.r2_key;
+        const table = photo.entity_type === 'cat' ? 'cats' : 'kittens';
+        await env.DB.prepare('UPDATE ' + table + ' SET photo_url = ?, updated_at = ? WHERE id = ?').bind(photoUrl, now(), photo.entity_id).run();
+
+        return json({ success: true });
+      }
+
       // ADMIN: AUDIT LOG
       // =====================
 
@@ -1546,6 +1661,28 @@ nav.tabs button{padding:8px 10px;font-size:.72rem;white-space:nowrap;flex-shrink
 const API = window.location.origin + '/api';
 let authToken = localStorage.getItem('bsc_admin_token');
 let currentTab = 'todo';
+
+// Client-side image resizer - optimizes photos before upload
+function resizeImage(file, maxWidth, quality) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width, h = img.height;
+        if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(dataUrl.split(',')[1]); // return base64 without prefix
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...opts.headers };
@@ -2463,13 +2600,32 @@ function showAddLitterModal() {
   };
 }
 
-function showKittenEditModal(kittenId, kitten) {
+async function showKittenEditModal(kittenId, kitten) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
 
   const modal = document.createElement('div');
   modal.className = 'modal';
+
+  // Fetch existing photos
+  const { photos } = await api('/admin/photos/kitten/' + kittenId);
+
+  let photoHtml = '<div class="field"><label>Photos</label>';
+  photoHtml += '<div id="ekPhotoGrid" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
+  (photos || []).forEach(p => {
+    photoHtml += '<div style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:' + (p.sort_order === 0 ? '3px solid #A0522D' : '1px solid #D4C5A9') + '">';
+    photoHtml += '<img src="' + esc(p.url) + '" style="width:100%;height:100%;object-fit:cover">';
+    photoHtml += '<div style="position:absolute;top:2px;right:2px;display:flex;gap:2px">';
+    if (p.sort_order !== 0) photoHtml += '<button data-photo-primary="' + p.id + '" style="background:#D4AF37;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Set as primary">&#9733;</button>';
+    photoHtml += '<button data-photo-del="' + p.id + '" style="background:#8B3A3A;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Delete">&#10005;</button>';
+    photoHtml += '</div></div>';
+  });
+  photoHtml += '</div>';
+  photoHtml += '<input type="file" id="ekPhotoUpload" accept="image/*" multiple style="font-size:.82rem">';
+  photoHtml += '<div id="ekUploadStatus" style="font-size:.78rem;color:#6B5B4B;margin-top:4px"></div>';
+  photoHtml += '</div>';
+
   modal.innerHTML = '<h2>Edit Kitten #' + kitten.number + '</h2>' +
     '<div class="field"><label>Name</label><input type="text" id="ekName" value="' + esc(kitten.name || '') + '"></div>' +
     '<div class="field"><label>Color</label><input type="text" id="ekColor" value="' + esc(kitten.color || '') + '"></div>' +
@@ -2483,11 +2639,48 @@ function showKittenEditModal(kittenId, kitten) {
     '<option value="sold"' + (kitten.status === 'sold' ? ' selected' : '') + '>Sold</option>' +
     '</select></div>' +
     '<div class="field"><label>Reserved By (name or email)</label><input type="text" id="ekReservedBy" value="' + esc(kitten.reserved_by || '') + '"></div>' +
+    photoHtml +
     '<div class="field"><label>Notes</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
     '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveKittenBtn">Save Changes</button></div>';
 
   bg.appendChild(modal);
   document.body.appendChild(bg);
+
+  // Photo upload handler
+  document.getElementById('ekPhotoUpload').onchange = async (e) => {
+    const files = e.target.files;
+    if (!files.length) return;
+    const status = document.getElementById('ekUploadStatus');
+    status.textContent = 'Optimizing & uploading ' + files.length + ' photo(s)...';
+    for (const file of files) {
+      const resized = await resizeImage(file, 1200, 0.8);
+      await api('/admin/photos/upload', { method: 'POST', body: JSON.stringify({
+        entity_type: 'kitten', entity_id: kittenId,
+        photos: [{ filename: file.name, data: resized }]
+      })});
+    }
+    bg.remove();
+    showKittenEditModal(kittenId, kitten); // Refresh
+  };
+
+  // Photo delete handlers
+  bg.querySelectorAll('[data-photo-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Delete this photo?')) return;
+      await api('/admin/photos/' + btn.getAttribute('data-photo-del'), { method: 'DELETE' });
+      bg.remove();
+      showKittenEditModal(kittenId, kitten);
+    };
+  });
+
+  // Photo set-primary handlers
+  bg.querySelectorAll('[data-photo-primary]').forEach(btn => {
+    btn.onclick = async () => {
+      await api('/admin/photos/' + btn.getAttribute('data-photo-primary') + '/primary', { method: 'PUT' });
+      bg.remove();
+      showKittenEditModal(kittenId, kitten);
+    };
+  });
 
   document.getElementById('saveKittenBtn').onclick = async () => {
     await api('/admin/kittens/' + kittenId, { method: 'PUT', body: JSON.stringify({
@@ -2555,10 +2748,31 @@ async function renderCats(container) {
   });
 }
 
-function showCatModal(cat) {
+async function showCatModal(cat) {
   const isEdit = !!cat;
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
   const modal = el('div', { class: 'modal' });
+
+  // Fetch existing photos if editing
+  let photoHtml = '';
+  if (isEdit) {
+    const { photos } = await api('/admin/photos/cat/' + cat.id);
+    photoHtml = '<div class="field"><label>Photos</label>';
+    photoHtml += '<div id="catPhotoGrid" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
+    (photos || []).forEach(p => {
+      photoHtml += '<div style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:' + (p.sort_order === 0 ? '3px solid #A0522D' : '1px solid #D4C5A9') + '">';
+      photoHtml += '<img src="' + esc(p.url) + '" style="width:100%;height:100%;object-fit:cover">';
+      photoHtml += '<div style="position:absolute;top:2px;right:2px;display:flex;gap:2px">';
+      if (p.sort_order !== 0) photoHtml += '<button data-photo-primary="' + p.id + '" style="background:#D4AF37;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Set as primary">&#9733;</button>';
+      photoHtml += '<button data-photo-del="' + p.id + '" style="background:#8B3A3A;color:#fff;border:none;border-radius:3px;font-size:.6rem;cursor:pointer;padding:1px 4px" title="Delete">&#10005;</button>';
+      photoHtml += '</div></div>';
+    });
+    photoHtml += '</div>';
+    photoHtml += '<input type="file" id="catPhotoUpload" accept="image/*" multiple style="font-size:.82rem">';
+    photoHtml += '<div id="catUploadStatus" style="font-size:.78rem;color:#6B5B4B;margin-top:4px"></div>';
+    photoHtml += '</div>';
+  }
+
   modal.innerHTML = '<h2>' + (isEdit ? 'Edit Cat' : 'Add Cat') + '</h2>' +
     '<div class="form-grid">' +
     '<div class="field"><label>Name</label><input type="text" id="catName" value="' + esc(cat ? cat.name : '') + '"></div>' +
@@ -2567,9 +2781,10 @@ function showCatModal(cat) {
     '<div class="field"><label>Sex</label><select id="catSex"><option value="female"' + (cat && cat.sex === 'female' ? ' selected' : '') + '>Female</option><option value="male"' + (cat && cat.sex === 'male' ? ' selected' : '') + '>Male</option></select></div>' +
     '<div class="field"><label>Color</label><input type="text" id="catColor" value="' + esc(cat ? cat.color : '') + '"></div>' +
     '<div class="field"><label>Registration</label><input type="text" id="catReg" value="' + esc(cat ? cat.registration : '') + '"></div>' +
-    '<div class="field"><label>Photo URL</label><input type="text" id="catPhoto" value="' + esc(cat ? cat.photo_url : '') + '"></div>' +
+    (!isEdit ? '<div class="field"><label>Photo URL</label><input type="text" id="catPhoto" value=""></div>' : '') +
     '<div class="field"><label>Sort Order</label><input type="number" id="catSort" value="' + (cat ? cat.sort_order || 0 : 0) + '"></div>' +
     '</div>' +
+    photoHtml +
     '<div class="field" style="margin-top:12px"><label>Bio</label><textarea id="catBio" rows="3">' + esc(cat ? cat.bio : '') + '</textarea></div>' +
     '<div style="display:flex;gap:16px;margin-top:12px;align-items:center">' +
     '<label style="display:flex;align-items:center;gap:8px;font-size:.88rem"><input type="checkbox" id="catHealth"' + (cat && cat.health_tested ? ' checked' : '') + '> Health Tested</label>' +
@@ -2580,6 +2795,44 @@ function showCatModal(cat) {
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
+  // Photo upload handler (edit mode only)
+  if (isEdit) {
+    const uploadEl = document.getElementById('catPhotoUpload');
+    if (uploadEl) {
+      uploadEl.onchange = async (e) => {
+        const files = e.target.files;
+        if (!files.length) return;
+        document.getElementById('catUploadStatus').textContent = 'Optimizing & uploading ' + files.length + ' photo(s)...';
+        for (const file of files) {
+          const resized = await resizeImage(file, 1200, 0.8);
+          await api('/admin/photos/upload', { method: 'POST', body: JSON.stringify({
+            entity_type: 'cat', entity_id: cat.id,
+            photos: [{ filename: file.name, data: resized }]
+          })});
+        }
+        bg.remove();
+        showCatModal(cat);
+      };
+    }
+
+    bg.querySelectorAll('[data-photo-del]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Delete this photo?')) return;
+        await api('/admin/photos/' + btn.getAttribute('data-photo-del'), { method: 'DELETE' });
+        bg.remove();
+        showCatModal(cat);
+      };
+    });
+
+    bg.querySelectorAll('[data-photo-primary]').forEach(btn => {
+      btn.onclick = async () => {
+        await api('/admin/photos/' + btn.getAttribute('data-photo-primary') + '/primary', { method: 'PUT' });
+        bg.remove();
+        showCatModal(cat);
+      };
+    });
+  }
+
   document.getElementById('saveCatBtn').onclick = async () => {
     const data = {
       name: document.getElementById('catName').value,
@@ -2588,11 +2841,12 @@ function showCatModal(cat) {
       sex: document.getElementById('catSex').value,
       color: document.getElementById('catColor').value,
       registration: document.getElementById('catReg').value,
-      photo_url: document.getElementById('catPhoto').value,
       sort_order: parseInt(document.getElementById('catSort').value) || 0,
       bio: document.getElementById('catBio').value,
       health_tested: document.getElementById('catHealth').checked
     };
+    const photoUrlEl = document.getElementById('catPhoto');
+    if (photoUrlEl) data.photo_url = photoUrlEl.value;
     if (isEdit) {
       const statusEl = document.getElementById('catStatus');
       if (statusEl) data.status = statusEl.value;
