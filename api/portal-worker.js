@@ -609,8 +609,14 @@ export default {
           'INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)'
         ).bind(leadId, 'inbound', subject || 'Contact Form', `From: ${name} (${email})\nPhone: ${phone || 'N/A'}\n\n${message}`, now()).run();
 
+        // Get active litter info for Brevo
+        const activeLitter = await env.DB.prepare("SELECT litter_code, sire_name, dam_name, born_date FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
+        const litterInfo = activeLitter ? activeLitter.litter_code + ' (' + activeLitter.sire_name + ' x ' + activeLitter.dam_name + ', born ' + activeLitter.born_date + ')' : '';
+
         // Sync to Brevo CRM
-        await syncToBrevoCRM({ name, email, phone, source: 'contact', status: 'new' }, BREVO_LISTS.leads, {});
+        await syncToBrevoCRM({ name, email, phone, source: 'contact', status: 'new' }, BREVO_LISTS.leads, {
+          LITTER_INFO: litterInfo
+        });
 
         // Notify Deanna of new contact
         await sendEmail('Deanna@blueskycattery.com', 'New Contact: ' + name,
@@ -647,8 +653,16 @@ export default {
           'INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)'
         ).bind(leadId, 'inbound', `Kitten Reservation - ${kitten || 'General'}`, `From: ${name} (${email})\n\n${fields}`, now()).run();
 
-        // Sync to Brevo CRM
-        await syncToBrevoCRM({ name, email, phone, source: 'reservation', status: 'new' }, BREVO_LISTS.leads, {});
+        // Get active litter info for Brevo
+        const activeLitter = await env.DB.prepare("SELECT litter_code, sire_name, dam_name, born_date FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
+        const litterInfo = activeLitter ? activeLitter.litter_code + ' (' + activeLitter.sire_name + ' x ' + activeLitter.dam_name + ', born ' + activeLitter.born_date + ')' : '';
+
+        // Sync to Brevo CRM with kitten + litter info
+        await syncToBrevoCRM({ name, email, phone, source: 'reservation', status: 'new' }, BREVO_LISTS.leads, {
+          KITTEN_INTEREST: kitten || 'General interest',
+          LITTER_INFO: litterInfo,
+          LITTERS_APPLIED: activeLitter ? activeLitter.litter_code : ''
+        });
 
         // Notify Deanna of new reservation
         await sendEmail('Deanna@blueskycattery.com', 'New Kitten Reservation: ' + name,
