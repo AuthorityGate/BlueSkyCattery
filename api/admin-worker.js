@@ -1554,9 +1554,9 @@ export default {
         let sql = 'SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1';
         const params = [];
         if (search) {
-          sql += ' AND (LOWER(u.email) LIKE ? OR LOWER(COALESCE(l.name,\'\')) LIKE ? OR LOWER(COALESCE(l.phone,\'\')) LIKE ?)';
+          sql += ' AND (LOWER(u.email) LIKE ? OR LOWER(COALESCE(l.name,\'\')) LIKE ? OR LOWER(COALESCE(l.phone,\'\')) LIKE ? OR LOWER(COALESCE(u.admin_notes,\'\')) LIKE ?)';
           const s = '%' + search.toLowerCase() + '%';
-          params.push(s, s, s);
+          params.push(s, s, s, s);
         }
         sql += ' ORDER BY u.created_at DESC';
         const users = await env.DB.prepare(sql).bind(...params).all();
@@ -1577,6 +1577,15 @@ export default {
         fields.push('updated_at = ?'); values.push(now());
         values.push(userId);
         await env.DB.prepare('UPDATE users SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
+
+        // Sync admin notes to Brevo CRM
+        if (data.admin_notes !== undefined) {
+          const user = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(userId).first();
+          if (user) {
+            await updateBrevoContact(user.email, { ADMIN_NOTES: data.admin_notes }, [], []);
+          }
+        }
+
         await writeAuditLog(env.DB, session.user_id, 'user_updated', { target_user_id: userId, changes: data });
         return json({ success: true });
       }
