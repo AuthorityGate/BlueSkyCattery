@@ -1354,6 +1354,16 @@ export default {
         });
       }
 
+      // Delete a message
+      if (path.match(/^\/api\/admin\/messages\/\d+$/) && method === 'DELETE') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const msgId = path.split('/').pop();
+        await env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(msgId).run();
+        await writeAuditLog(env.DB, session.user_id, 'message_deleted', { message_id: msgId });
+        return json({ success: true });
+      }
+
       // ADMIN: AUDIT LOG
       // =====================
 
@@ -1764,7 +1774,7 @@ async function renderTodo(container) {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
       html += '<div style="display:flex;align-items:center;gap:10px"><span style="background:' + scoreColor + ';color:#fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + a.score + '</span>';
       html += '<div><strong>' + esc(a.full_name||'N/A') + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(a.purpose||'pet') + ' &mdash; ' + timeAgo(a.created_at) + '</span></div></div>';
-      html += '<button class="btn btn-outline btn-sm" onclick="currentTab=&#39;applications&#39;;renderApp()">Review</button>';
+      html += '<button class="btn btn-outline btn-sm" onclick="showAppModal(' + a.id + ')">Review</button>';
       html += '</div>';
     });
     html += '</div>';
@@ -2043,8 +2053,8 @@ async function showLeadModal(leadId) {
     const bgColor = isOutbound ? 'rgba(122,139,111,.08)' : '#F5EDE0';
     const borderColor = isOutbound ? 'rgba(122,139,111,.2)' : 'transparent';
     const dirLabel = isOutbound ? '<span style="color:#7A8B6F;font-weight:700">SENT</span>' : '<span style="color:#87A5B4;font-weight:700">RECEIVED</span>';
-    html += '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';padding:12px;border-radius:8px;margin-bottom:8px;font-size:.88rem">';
-    html += '<div style="font-size:.75rem;color:#6B5B4B;margin-bottom:4px;display:flex;justify-content:space-between">' + dirLabel + ' <span>' + esc(msg.created_at) + '</span></div>';
+    html += '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';padding:12px;border-radius:8px;margin-bottom:8px;font-size:.88rem;position:relative">';
+    html += '<div style="font-size:.75rem;color:#6B5B4B;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center">' + dirLabel + ' <div style="display:flex;align-items:center;gap:8px"><span>' + esc(msg.created_at) + '</span><button class="btn btn-sm" data-msg-del="' + msg.id + '" style="padding:2px 8px;font-size:.7rem;color:#8B3A3A;background:transparent;border:1px solid #8B3A3A" title="Delete message">&#10005;</button></div></div>';
     html += '<div style="font-size:.8rem;font-weight:600;margin-bottom:4px">' + esc(msg.subject || '') + '</div>';
     html += '<pre style="white-space:pre-wrap;font-family:inherit;margin:0">' + esc(msg.body || '') + '</pre></div>';
   });
@@ -2078,6 +2088,23 @@ async function showLeadModal(leadId) {
       btn.disabled = false; btn.textContent = 'Send Email';
     }
   };
+
+  // Attach delete handlers to message buttons
+  bg.querySelectorAll('[data-msg-del]').forEach(btn => {
+    btn.onclick = async () => {
+      const msgId = btn.getAttribute('data-msg-del');
+      if (!confirm('Delete this message?')) return;
+      btn.disabled = true;
+      const res = await api('/admin/messages/' + msgId, { method: 'DELETE' });
+      if (res.success) {
+        bg.remove();
+        showLeadModal(leadId); // Refresh
+      } else {
+        alert('Failed to delete');
+        btn.disabled = false;
+      }
+    };
+  });
 }
 
 function showApprovalModal(name, email, password) {
