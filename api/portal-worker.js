@@ -735,35 +735,53 @@ export default {
       // Newsletter / Waitlist signup (public, no auth)
       if (path === '/api/signup' && method === 'POST') {
         const data = await parseBody(request);
-        const { name, email, type } = data; // type: "newsletter" or "waitlist" or "both"
+        const { name, email, type, sex_preference, color_preference, temperament_preference, eye_color_preference, other_preference } = data;
         if (!email) return json({ error: 'Email required' }, 400);
 
         const firstName = (name || '').split(' ')[0] || '';
         const lastName = (name || '').split(' ').slice(1).join(' ') || '';
         const lists = [];
-        if (type === 'newsletter' || type === 'both') lists.push(12); // Newsletter (public opt-in, NOT CRM waitlist)
-        if (type === 'waitlist' || type === 'both') lists.push(13); // Litter Waitlist (public opt-in for new litter alerts, NOT application waitlist list 9)
-        if (lists.length === 0) lists.push(12); // Default to newsletter
+        if (type === 'newsletter' || type === 'both') lists.push(12);
+        if (type === 'waitlist' || type === 'both') lists.push(13);
+        if (lists.length === 0) lists.push(12);
 
-        // Add to Brevo
+        // Build Brevo attributes including preferences
+        const brevoAttrs = { FIRSTNAME: firstName, LASTNAME: lastName, LEAD_SOURCE: 'signup_' + type, LEAD_STATUS: 'subscribed' };
+        if (sex_preference) brevoAttrs.SEX_PREFERENCE = sex_preference;
+        if (color_preference) brevoAttrs.COLOR_PREFERENCE = color_preference;
+        if (temperament_preference) brevoAttrs.TEMPERAMENT_PREFERENCE = temperament_preference;
+        if (eye_color_preference) brevoAttrs.EYE_COLOR_PREFERENCE = eye_color_preference;
+
         if (_brevoKey) {
           await fetch('https://api.brevo.com/v3/contacts', {
             method: 'POST',
             headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email,
-              attributes: { FIRSTNAME: firstName, LASTNAME: lastName, LEAD_SOURCE: 'signup_' + type, LEAD_STATUS: 'subscribed' },
-              listIds: lists,
-              updateEnabled: true
-            })
+            body: JSON.stringify({ email, attributes: brevoAttrs, listIds: lists, updateEnabled: true })
           });
         }
 
-        // Also create a lead in D1
+        // Ensure preference columns exist
+        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN sex_preference TEXT").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN color_preference TEXT").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN temperament_preference TEXT").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN eye_color_preference TEXT").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE leads ADD COLUMN other_preference TEXT").run(); } catch(e) {}
+
+        // Create or update lead in D1
         const existing = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
-        if (!existing) {
-          await env.DB.prepare('INSERT INTO leads (name, email, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-            .bind(name || email, email, 'signup_' + type, 'subscribed', now(), now()).run();
+        if (existing) {
+          const updates = ['updated_at = ?'];
+          const vals = [now()];
+          if (sex_preference) { updates.push('sex_preference = ?'); vals.push(sex_preference); }
+          if (color_preference) { updates.push('color_preference = ?'); vals.push(color_preference); }
+          if (temperament_preference) { updates.push('temperament_preference = ?'); vals.push(temperament_preference); }
+          if (eye_color_preference) { updates.push('eye_color_preference = ?'); vals.push(eye_color_preference); }
+          if (other_preference) { updates.push('other_preference = ?'); vals.push(other_preference); }
+          vals.push(existing.id);
+          await env.DB.prepare('UPDATE leads SET ' + updates.join(', ') + ' WHERE id = ?').bind(...vals).run();
+        } else {
+          await env.DB.prepare('INSERT INTO leads (name, email, source, status, sex_preference, color_preference, temperament_preference, eye_color_preference, other_preference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(name || email, email, 'signup_' + type, 'subscribed', sex_preference || null, color_preference || null, temperament_preference || null, eye_color_preference || null, other_preference || null, now(), now()).run();
         }
 
         return json({ success: true, message: 'Signed up successfully!' });
@@ -1547,11 +1565,16 @@ async function renderPortal() {
         <p style="font-size:.82rem;color:#6B5B4B;margin-bottom:12px">Cattery updates, cat care tips, and the occasional adorable photo.</p>
         <button class="btn btn-primary" style="width:100%;font-size:.85rem" id="subNewsletter" onclick="toggleSub('newsletter')">Subscribe</button>
       </div>
-      <div style="padding:20px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:10px;text-align:center">
-        <div style="font-size:1.5rem;margin-bottom:8px">&#128049;</div>
+      <div style="padding:20px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:10px;text-align:left">
+        <div style="text-align:center"><div style="font-size:1.5rem;margin-bottom:8px">&#128049;</div>
         <h3 style="font-size:.95rem;margin-bottom:4px">Litter Notifications</h3>
-        <p style="font-size:.82rem;color:#6B5B4B;margin-bottom:12px">Be the first to know when new kittens are born or available.</p>
-        <button class="btn btn-primary" style="width:100%;font-size:.85rem" id="subWaitlist" onclick="toggleSub('waitlist')">Join Waitlist</button>
+        <p style="font-size:.82rem;color:#6B5B4B;margin-bottom:12px">Be the first to know! Tell us what you're looking for.</p></div>
+        <select id="wlSex" style="width:100%;padding:6px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.82rem;margin-bottom:6px"><option value="">Sex (any)</option><option value="male">Male</option><option value="female">Female</option><option value="no_preference">No Preference</option></select>
+        <select id="wlColor" style="width:100%;padding:6px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.82rem;margin-bottom:6px"><option value="">Color (any)</option><option value="ebony">Ebony</option><option value="blue">Blue</option><option value="chocolate">Chocolate</option><option value="lavender">Lavender</option><option value="white">White</option><option value="tabby">Tabby</option><option value="colorpoint">Colorpoint</option><option value="no_preference">No Preference</option></select>
+        <select id="wlTemp" style="width:100%;padding:6px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.82rem;margin-bottom:6px"><option value="">Personality (any)</option><option value="social_butterfly">Social Butterfly</option><option value="velcro">Velcro Cat</option><option value="playful">Chaos Agent</option><option value="calm">Zen Master</option><option value="vocal">The Commentator</option><option value="sassy">The Diva</option><option value="selective">Selective Socializer</option><option value="curious">The Inspector</option><option value="moody">The Brooder</option><option value="no_preference">Surprise Me</option></select>
+        <select id="wlEye" style="width:100%;padding:6px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.82rem;margin-bottom:6px"><option value="">Eye Color (any)</option><option value="green">Green</option><option value="blue">Blue</option><option value="gold">Gold / Amber</option><option value="copper">Copper</option><option value="odd_eyed">Odd-Eyed</option><option value="no_preference">No Preference</option></select>
+        <input type="text" id="wlOther" placeholder="Other preferences?" style="width:100%;padding:6px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.82rem;margin-bottom:8px">
+        <button class="btn btn-primary" style="width:100%;font-size:.85rem" id="subWaitlist" onclick="toggleSubWithPrefs()">Join Waitlist</button>
       </div>
     </div>
   </div>\`;
@@ -1832,6 +1855,22 @@ async function saveProfile() {
     msg.textContent = res.error || 'Failed to save';
     btn.textContent = 'Save Profile'; btn.disabled = false;
   }
+}
+
+async function toggleSubWithPrefs() {
+  const btn = document.getElementById('subWaitlist');
+  btn.disabled = true; btn.textContent = 'Joining...';
+  const me = await api('/auth/me');
+  const data = { name: me.user.email, email: me.user.email, type: 'waitlist' };
+  const sex = document.getElementById('wlSex'); if (sex && sex.value) data.sex_preference = sex.value;
+  const color = document.getElementById('wlColor'); if (color && color.value) data.color_preference = color.value;
+  const temp = document.getElementById('wlTemp'); if (temp && temp.value) data.temperament_preference = temp.value;
+  const eye = document.getElementById('wlEye'); if (eye && eye.value) data.eye_color_preference = eye.value;
+  const other = document.getElementById('wlOther'); if (other && other.value) data.other_preference = other.value;
+  const res = await fetch(API + '/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+  if (res.success) {
+    btn.textContent = 'Joined!'; btn.style.background = '#7A8B6F'; btn.style.cursor = 'default';
+  } else { btn.textContent = 'Join Waitlist'; btn.disabled = false; alert(res.error || 'Something went wrong'); }
 }
 
 async function toggleSub(type) {

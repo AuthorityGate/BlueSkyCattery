@@ -228,10 +228,55 @@
             <div class="signup-grid">
                 <div class="signup-card">
                     <h3>Litter Waitlist</h3>
-                    <p>Be the first to know when new kittens arrive. Waitlist members get priority notification before we announce publicly.</p>
+                    <p>Be the first to know when new kittens arrive. Tell us what you're looking for!</p>
                     <form class="signup-form" onsubmit="return submitSignup(event, 'waitlist')">
                         <input type="text" name="name" placeholder="Your Name" required>
                         <input type="email" name="email" placeholder="Email Address" required>
+                        <select name="sex_preference" style="width:100%;padding:10px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.9rem;margin-bottom:10px;background:#fff">
+                            <option value="">Sex Preference (any)</option>
+                            <option value="male">Male</option>
+                            <option value="female">Female</option>
+                            <option value="no_preference">No Preference</option>
+                        </select>
+                        <select name="color_preference" style="width:100%;padding:10px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.9rem;margin-bottom:10px;background:#fff">
+                            <option value="">Color / Markings (any)</option>
+                            <option value="ebony">Ebony (Black)</option>
+                            <option value="blue">Blue</option>
+                            <option value="chocolate">Chocolate</option>
+                            <option value="lavender">Lavender</option>
+                            <option value="cinnamon">Cinnamon</option>
+                            <option value="fawn">Fawn</option>
+                            <option value="red">Red / Cream</option>
+                            <option value="white">White</option>
+                            <option value="tabby">Tabby (any color)</option>
+                            <option value="spotted">Spotted / Ticked</option>
+                            <option value="bicolor">Bicolor</option>
+                            <option value="colorpoint">Colorpoint / Siamese Pattern</option>
+                            <option value="no_preference">No Preference</option>
+                        </select>
+                        <select name="temperament_preference" style="width:100%;padding:10px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.9rem;margin-bottom:10px;background:#fff">
+                            <option value="">Personality Style (any)</option>
+                            <option value="social_butterfly">Social Butterfly &mdash; loves everyone, greets every guest</option>
+                            <option value="velcro">Velcro Cat &mdash; your shadow, bonded to their person</option>
+                            <option value="playful">Chaos Agent &mdash; high energy, into everything, zero chill</option>
+                            <option value="calm">Zen Master &mdash; relaxed, gentle, unbothered by life</option>
+                            <option value="vocal">The Commentator &mdash; has opinions about everything, loudly</option>
+                            <option value="sassy">The Diva &mdash; independent, dramatic, runs the house</option>
+                            <option value="selective">Selective Socializer &mdash; loyal to their people, suspicious of strangers</option>
+                            <option value="curious">The Inspector &mdash; investigates everything, must know all secrets</option>
+                            <option value="moody">The Brooder &mdash; deep feelings, occasional attitude, secretly sweet</option>
+                            <option value="no_preference">Surprise Me &mdash; I'll love whoever picks me</option>
+                        </select>
+                        <select name="eye_color_preference" style="width:100%;padding:10px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.9rem;margin-bottom:10px;background:#fff">
+                            <option value="">Eye Color (any)</option>
+                            <option value="green">Green</option>
+                            <option value="blue">Blue</option>
+                            <option value="gold">Gold / Amber</option>
+                            <option value="copper">Copper</option>
+                            <option value="odd_eyed">Odd-Eyed (two different colors)</option>
+                            <option value="no_preference">No Preference</option>
+                        </select>
+                        <input type="text" name="other_preference" placeholder="Anything else? (optional)" style="margin-bottom:10px">
                         <button type="submit" class="btn btn-primary" style="width:100%">Join the Waitlist</button>
                     </form>
                 </div>

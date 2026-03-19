@@ -240,6 +240,12 @@ function submitSignup(e, type) {
     var btn = form.querySelector('button[type="submit"]');
     var fd = new FormData(form);
     var data = { name: fd.get('name'), email: fd.get('email'), type: type };
+    // Include waitlist preferences if present
+    if (fd.get('sex_preference')) data.sex_preference = fd.get('sex_preference');
+    if (fd.get('color_preference')) data.color_preference = fd.get('color_preference');
+    if (fd.get('temperament_preference')) data.temperament_preference = fd.get('temperament_preference');
+    if (fd.get('eye_color_preference')) data.eye_color_preference = fd.get('eye_color_preference');
+    if (fd.get('other_preference')) data.other_preference = fd.get('other_preference');
 
     btn.disabled = true;
     btn.textContent = 'Signing up...';

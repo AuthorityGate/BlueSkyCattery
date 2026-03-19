@@ -673,7 +673,7 @@ export default {
         const source = url.searchParams.get('source') || '';
         let sql = 'SELECT * FROM leads WHERE 1=1';
         const params = [];
-        if (search) { sql += ' AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(phone) LIKE ?)'; params.push('%'+search.toLowerCase()+'%', '%'+search.toLowerCase()+'%', '%'+search.toLowerCase()+'%'); }
+        if (search) { sql += ' AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(COALESCE(sex_preference,\'\')) LIKE ? OR LOWER(COALESCE(color_preference,\'\')) LIKE ? OR LOWER(COALESCE(temperament_preference,\'\')) LIKE ? OR LOWER(COALESCE(eye_color_preference,\'\')) LIKE ?)'; const s = '%'+search.toLowerCase()+'%'; params.push(s, s, s, s, s, s, s); }
         if (status) { sql += ' AND status = ?'; params.push(status); }
         if (source) { sql += ' AND source = ?'; params.push(source); }
         sql += ' ORDER BY created_at DESC';
@@ -2310,11 +2310,17 @@ async function renderLeads(container) {
   panel.innerHTML += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (leads||[]).length + ' lead(s) found</div>';
 
   const table = el('table');
-  table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Source</th><th>Status</th><th>When</th><th>Actions</th></tr></thead>';
+  table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Source</th><th>Preferences</th><th>Status</th><th>When</th><th>Actions</th></tr></thead>';
   const tbody = el('tbody');
   (leads || []).forEach(lead => {
     const tr = el('tr');
-    tr.innerHTML = '<td><strong>'+esc(lead.name)+'</strong></td><td>'+esc(lead.email)+'</td><td>'+esc(lead.phone||'—')+'</td><td>'+esc(lead.source)+'</td><td>'+badge(lead.status)+'</td><td>'+timeAgo(lead.created_at)+'</td>';
+    let prefs = [];
+    if (lead.sex_preference && lead.sex_preference !== 'no_preference') prefs.push(lead.sex_preference);
+    if (lead.color_preference && lead.color_preference !== 'no_preference') prefs.push(lead.color_preference);
+    if (lead.temperament_preference && lead.temperament_preference !== 'no_preference') prefs.push(lead.temperament_preference.replace(/_/g,' '));
+    if (lead.eye_color_preference && lead.eye_color_preference !== 'no_preference') prefs.push(lead.eye_color_preference + ' eyes');
+    const prefHtml = prefs.length > 0 ? prefs.map(p => '<span style="display:inline-block;padding:1px 6px;border-radius:8px;font-size:.7rem;background:#F5EDE0;color:#6B5B4B;margin:1px">' + esc(p) + '</span>').join('') : '<span style="color:#ccc;font-size:.78rem">—</span>';
+    tr.innerHTML = '<td><strong>'+esc(lead.name)+'</strong></td><td>'+esc(lead.email)+'</td><td>'+esc(lead.phone||'—')+'</td><td>'+esc(lead.source)+'</td><td style="max-width:180px">'+prefHtml+'</td><td>'+badge(lead.status)+'</td><td>'+timeAgo(lead.created_at)+'</td>';
     const actionTd = el('td', { style: 'white-space:nowrap' });
     actionTd.appendChild(el('button', { class: 'btn btn-outline btn-sm', onclick: () => showLeadModal(lead.id) }, 'View'));
     if (lead.status === 'new') {
