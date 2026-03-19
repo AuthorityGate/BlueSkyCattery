@@ -1216,6 +1216,72 @@ export default {
         });
       }
 
+      // ADMIN: LITTER ANNOUNCEMENT - email all interested leads + waitlist
+      if (path === '/api/admin/announce-litter' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const { litter_id, template_type, custom_message } = await request.json();
+
+        const litter = await env.DB.prepare('SELECT * FROM litters WHERE id = ?').bind(litter_id).first();
+        if (!litter) return json({ error: 'Litter not found' }, 404);
+
+        // Find all recipients:
+        // 1. Leads who didn't get a kitten (status: new, approved, contacted)
+        // 2. Applicants on waitlist
+        // 3. Applicants who were not approved for previous litters
+        const leads = await env.DB.prepare(`
+          SELECT DISTINCT l.email, l.name FROM leads l
+          WHERE l.status IN ('new', 'approved', 'contacted')
+          AND l.email NOT IN (SELECT reserved_by FROM kittens WHERE reserved_by IS NOT NULL AND status = 'sold')
+        `).all();
+
+        const waitlist = await env.DB.prepare(`
+          SELECT DISTINCT a.email, a.full_name as name FROM applications a
+          WHERE a.status IN ('waitlist', 'submitted', 'reviewed')
+        `).all();
+
+        // Deduplicate by email
+        const recipientMap = {};
+        leads.results.forEach(r => { recipientMap[r.email] = r.name; });
+        waitlist.results.forEach(r => { recipientMap[r.email] = r.name; });
+
+        // Remove admin emails
+        delete recipientMap['Deanna@blueskycattery.com'];
+
+        const recipients = Object.entries(recipientMap);
+        const templateId = template_type === 'photos' ? 9 : 8;
+
+        let sent = 0;
+        let failed = 0;
+        for (const [email, name] of recipients) {
+          try {
+            await fetch('https://api.brevo.com/v3/smtp/email', {
+              method: 'POST',
+              headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                templateId,
+                to: [{ email, name: name || email }],
+                params: {
+                  FIRSTNAME: (name || '').split(' ')[0] || 'there',
+                  LITTER_NAME: litter.litter_code,
+                  SIRE: litter.sire_name,
+                  DAM: litter.dam_name,
+                  EXPECTED_DATE: litter.born_date || 'Coming soon',
+                  ANNOUNCEMENT_MESSAGE: custom_message || 'We are thrilled to announce a new litter and wanted to reach out to you first!',
+                  PHOTO_MESSAGE: custom_message || 'Head to our website to see photos of every kitten in this litter!'
+                }
+              })
+            });
+            sent++;
+          } catch (e) { failed++; }
+        }
+
+        await writeAuditLog(env.DB, session.user_id, 'litter_announcement', 'litter', litter_id,
+          template_type + ' sent to ' + sent + ' recipients (' + failed + ' failed)');
+
+        return json({ success: true, sent, failed, total: recipients.length });
+      }
+
       // ADMIN: AUDIT LOG
       // =====================
 
@@ -2102,7 +2168,10 @@ async function renderKittens(container) {
     let litterHtml = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
     litterHtml += '<div><h3 style="font-size:1.15rem;margin:0">Litter ' + esc(litter.litter_code) + '</h3>';
     litterHtml += '<span style="font-size:.82rem;color:#6B5B4B">' + esc(litter.sire_name) + ' x ' + esc(litter.dam_name) + ' | Born: ' + esc(litter.born_date || 'TBD') + ' | Go-Home: ' + esc(litter.go_home_date || 'TBD') + '</span></div>';
-    litterHtml += '<span class="badge badge-' + (litter.status === 'active' ? 'approved' : 'new') + '">' + esc(litter.status) + '</span></div>';
+    litterHtml += '<div style="display:flex;gap:6px;align-items:center"><span class="badge badge-' + (litter.status === 'active' ? 'approved' : 'new') + '">' + esc(litter.status) + '</span>';
+    litterHtml += '<button class="btn btn-sm btn-primary" data-announce="' + litter.id + '" data-type="announcement">Announce Litter</button>';
+    litterHtml += '<button class="btn btn-sm btn-outline" data-announce="' + litter.id + '" data-type="photos">Send Photos Email</button>';
+    litterHtml += '</div></div>';
 
     const statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
 
@@ -2126,6 +2195,26 @@ async function renderKittens(container) {
 
     section.querySelectorAll('[data-kitten-id]').forEach(btn => {
       btn.onclick = () => showKittenEditModal(btn.getAttribute('data-kitten-id'), litter.kittens.find(k => k.id == btn.getAttribute('data-kitten-id')));
+    });
+
+    // Announce buttons
+    section.querySelectorAll('[data-announce]').forEach(btn => {
+      btn.onclick = async () => {
+        const litterId = btn.getAttribute('data-announce');
+        const type = btn.getAttribute('data-type');
+        const label = type === 'photos' ? 'Send kitten photos email' : 'Send new litter announcement';
+        const msg = prompt(label + ' to all interested leads & waitlist applicants.\\n\\nOptional custom message (or leave blank for default):');
+        if (msg === null) return; // cancelled
+        btn.disabled = true; btn.textContent = 'Sending...';
+        const res = await api('/admin/announce-litter', { method: 'POST', body: JSON.stringify({ litter_id: parseInt(litterId), template_type: type, custom_message: msg || '' }) });
+        if (res.success) {
+          alert('Sent to ' + res.sent + ' recipients! (' + res.failed + ' failed)');
+          btn.textContent = 'Sent!';
+        } else {
+          alert('Error: ' + (res.error || 'Unknown'));
+          btn.disabled = false; btn.textContent = type === 'photos' ? 'Send Photos Email' : 'Announce Litter';
+        }
+      };
     });
 
     panel.appendChild(section);

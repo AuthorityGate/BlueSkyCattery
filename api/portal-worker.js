@@ -710,6 +710,67 @@ export default {
         return json({ cats: cats.results });
       }
 
+      // Newsletter / Waitlist signup (public, no auth)
+      if (path === '/api/signup' && method === 'POST') {
+        const data = await parseBody(request);
+        const { name, email, type } = data; // type: "newsletter" or "waitlist" or "both"
+        if (!email) return json({ error: 'Email required' }, 400);
+
+        const firstName = (name || '').split(' ')[0] || '';
+        const lastName = (name || '').split(' ').slice(1).join(' ') || '';
+        const lists = [];
+        if (type === 'newsletter' || type === 'both') lists.push(12); // Newsletter
+        if (type === 'waitlist' || type === 'both') lists.push(13); // Litter Waitlist
+        if (lists.length === 0) lists.push(12); // Default to newsletter
+
+        // Add to Brevo
+        if (_brevoKey) {
+          await fetch('https://api.brevo.com/v3/contacts', {
+            method: 'POST',
+            headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email,
+              attributes: { FIRSTNAME: firstName, LASTNAME: lastName, LEAD_SOURCE: 'signup_' + type, LEAD_STATUS: 'subscribed' },
+              listIds: lists,
+              updateEnabled: true
+            })
+          });
+        }
+
+        // Also create a lead in D1
+        const existing = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
+        if (!existing) {
+          await env.DB.prepare('INSERT INTO leads (name, email, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .bind(name || email, email, 'signup_' + type, 'subscribed', now(), now()).run();
+        }
+
+        return json({ success: true, message: 'Signed up successfully!' });
+      }
+
+      // Account self-disable (applicant can disable their own account)
+      if (path === '/api/auth/disable-account' && method === 'POST') {
+        const session = await validateSession(env.DB, token);
+        if (!session) return json({ error: 'Not authenticated' }, 401);
+
+        // Mark user as disabled in D1
+        await env.DB.prepare('UPDATE users SET status = ?, updated_at = ? WHERE id = ?').bind('disabled', now(), session.user_id).run();
+
+        // Mark in Brevo as blacklisted (stops all emails)
+        const user = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(session.user_id).first();
+        if (user && _brevoKey) {
+          await fetch('https://api.brevo.com/v3/contacts/' + encodeURIComponent(user.email), {
+            method: 'PUT',
+            headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emailBlacklisted: true, attributes: { LEAD_STATUS: 'disabled' } })
+          });
+        }
+
+        // Delete session
+        await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(session.user_id).run();
+
+        return json({ success: true, message: 'Account disabled. No further emails will be sent.' });
+      }
+
       // Redirect old admin URL to new admin domain
       if (path === '/admin' || path === '/admin/') {
         return new Response(null, { status: 301, headers: { 'Location': 'https://admin.blueskycattery.com/' } });
@@ -1177,6 +1238,7 @@ async function renderPortal() {
   document.getElementById('app').innerHTML = \`
   <header><div class="container top-bar">
     <div><h1>Application Portal</h1><div class="sub">\${me.user.email}</div></div>
+    <a href="#" onclick="disableAccount();return false" style="color:rgba(255,255,255,.4);font-size:.75rem;text-decoration:none">Delete Account</a>
     <button class="btn btn-outline" onclick="logout()">Logout</button>
   </div></header>
   <div class="container">\${content}</div>\`;
@@ -1378,6 +1440,17 @@ function logout() {
   authToken = null;
   localStorage.removeItem('bsc_portal_token');
   renderLogin();
+}
+
+async function disableAccount() {
+  if (!confirm('Are you sure you want to disable your account? You will no longer receive emails from Blue Sky Cattery and will not be able to log in. Your application data will be retained.')) return;
+  if (!confirm('This cannot be undone from your side. You would need to contact Blue Sky Cattery directly to re-enable your account. Proceed?')) return;
+  const res = await api('/auth/disable-account', { method: 'POST' });
+  if (res.success) {
+    authToken = null;
+    localStorage.removeItem('bsc_portal_token');
+    document.getElementById('app').innerHTML = '<div class="login-page"><div class="login-box" style="text-align:center"><h1>Account Disabled</h1><p style="color:#6B5B4B;margin:16px 0">Your account has been disabled and no further emails will be sent. If you change your mind, please contact us at <a href="mailto:kittens@blueskycattery.com" style="color:#A0522D">kittens@blueskycattery.com</a>.</p><a href="https://blueskycattery.com" class="btn btn-primary">Return to Website</a></div></div>';
+  }
 }
 
 // Init

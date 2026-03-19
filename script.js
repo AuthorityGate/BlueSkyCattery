@@ -233,6 +233,38 @@ document.addEventListener('keydown', function (e) {
 });
 
 
+// --- Signup Form ---
+function submitSignup(e, type) {
+    e.preventDefault();
+    var form = e.target;
+    var btn = form.querySelector('button[type="submit"]');
+    var fd = new FormData(form);
+    var data = { name: fd.get('name'), email: fd.get('email'), type: type };
+
+    btn.disabled = true;
+    btn.textContent = 'Signing up...';
+
+    fetch('https://portal.blueskycattery.com/api/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    }).then(function (r) { return r.json(); })
+    .then(function (result) {
+        if (result.success) {
+            form.innerHTML = '<p style="text-align:center;color:#7A8B6F;font-weight:600;padding:16px">You\'re signed up! We\'ll be in touch.</p>';
+        } else {
+            alert(result.error || 'Something went wrong');
+            btn.disabled = false;
+            btn.textContent = type === 'waitlist' ? 'Join the Waitlist' : 'Subscribe';
+        }
+    }).catch(function () {
+        alert('Connection error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = type === 'waitlist' ? 'Join the Waitlist' : 'Subscribe';
+    });
+    return false;
+}
+
 // --- Portal API ---
 var PORTAL_API = 'https://portal.blueskycattery.com/api';
 

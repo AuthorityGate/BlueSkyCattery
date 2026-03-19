@@ -216,6 +216,37 @@
         </div>
     </section>
 
+    <!-- Signup -->
+    <section class="signup-section section section-alt">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Stay Connected</span>
+                <h2>Never Miss a Litter</h2>
+                <div class="section-divider"></div>
+            </div>
+            <div class="signup-grid">
+                <div class="signup-card">
+                    <h3>Litter Waitlist</h3>
+                    <p>Be the first to know when new kittens arrive. Waitlist members get priority notification before we announce publicly.</p>
+                    <form class="signup-form" onsubmit="return submitSignup(event, 'waitlist')">
+                        <input type="text" name="name" placeholder="Your Name" required>
+                        <input type="email" name="email" placeholder="Email Address" required>
+                        <button type="submit" class="btn btn-primary" style="width:100%">Join the Waitlist</button>
+                    </form>
+                </div>
+                <div class="signup-card">
+                    <h3>Newsletter</h3>
+                    <p>Updates about our cattery, our cats, upcoming litters, events, and the occasional adorable kitten photo.</p>
+                    <form class="signup-form" onsubmit="return submitSignup(event, 'newsletter')">
+                        <input type="text" name="name" placeholder="Your Name" required>
+                        <input type="email" name="email" placeholder="Email Address" required>
+                        <button type="submit" class="btn btn-secondary" style="width:100%;border-color:var(--color-rust);color:var(--color-rust)">Subscribe</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <!-- CTA -->
     <section class="cta section">
         <div class="container">
@@ -266,7 +297,7 @@
         </div>
     </footer>
 
-    <script src="script.js?v=9"></script>
+    <script src="script.js?v=10"></script>
 
 </body>
 </html>
