@@ -661,12 +661,12 @@ export default {
         const search = url.searchParams.get('search') || '';
         const status = url.searchParams.get('status') || '';
         const source = url.searchParams.get('source') || '';
-        let sql = 'SELECT * FROM leads WHERE 1=1';
+        let sql = 'SELECT l.*, u.id as user_id FROM leads l LEFT JOIN users u ON u.lead_id = l.id WHERE 1=1';
         const params = [];
-        if (search) { sql += ' AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(COALESCE(sex_preference,\'\')) LIKE ? OR LOWER(COALESCE(color_preference,\'\')) LIKE ? OR LOWER(COALESCE(temperament_preference,\'\')) LIKE ? OR LOWER(COALESCE(eye_color_preference,\'\')) LIKE ?)'; const s = '%'+search.toLowerCase()+'%'; params.push(s, s, s, s, s, s, s); }
-        if (status) { sql += ' AND status = ?'; params.push(status); }
-        if (source) { sql += ' AND source = ?'; params.push(source); }
-        sql += ' ORDER BY created_at DESC';
+        if (search) { sql += " AND (LOWER(l.name) LIKE ? OR LOWER(l.email) LIKE ? OR LOWER(l.phone) LIKE ? OR LOWER(COALESCE(l.sex_preference,'')) LIKE ? OR LOWER(COALESCE(l.color_preference,'')) LIKE ? OR LOWER(COALESCE(l.temperament_preference,'')) LIKE ? OR LOWER(COALESCE(l.eye_color_preference,'')) LIKE ?)"; const s = '%'+search.toLowerCase()+'%'; params.push(s, s, s, s, s, s, s); }
+        if (status) { sql += ' AND l.status = ?'; params.push(status); }
+        if (source) { sql += ' AND l.source = ?'; params.push(source); }
+        sql += ' ORDER BY l.created_at DESC';
         const leads = await env.DB.prepare(sql).bind(...params).all();
         return json({ leads: leads.results });
       }
@@ -1290,7 +1290,7 @@ export default {
         if (!session) return json({ error: 'Forbidden' }, 403);
 
         // New leads needing review
-        const newLeads = await env.DB.prepare("SELECT id, name, email, source, created_at FROM leads WHERE status = 'new' ORDER BY created_at DESC").all();
+        const newLeads = await env.DB.prepare("SELECT l.id, l.name, l.email, l.source, l.created_at, u.id as user_id FROM leads l LEFT JOIN users u ON u.lead_id = l.id WHERE l.status = 'new' ORDER BY l.created_at DESC").all();
 
         // Pending applications needing review
         const pendingApps = await env.DB.prepare("SELECT id, full_name, email, score, purpose, created_at FROM applications WHERE status = 'submitted' ORDER BY score DESC").all();
@@ -2372,9 +2372,11 @@ async function renderTodo(container) {
     html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#87A5B4;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.newLeads.length + '</div><h3 style="margin:0;font-size:1rem">New Leads to Review</h3></div>';
     data.newLeads.forEach(l => {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
-      html += '<div><strong>' + esc(l.name) + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(l.email) + ' &mdash; ' + esc(l.source) + ' &mdash; ' + timeAgo(l.created_at) + '</span></div>';
-      html += '<div style="display:flex;gap:6px"><button class="btn btn-outline btn-sm" onclick="currentTab=&#39;leads&#39;;renderApp()">Review</button></div>';
-      html += '</div>';
+      html += '<div><strong>' + esc(l.name) + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(l.email) + ' &mdash; ' + esc(l.source) + (l.user_id ? ' &mdash; <span style="color:#7A8B6F;font-weight:600">has account</span>' : '') + ' &mdash; ' + timeAgo(l.created_at) + '</span></div>';
+      html += '<div style="display:flex;gap:6px">';
+      html += '<button class="btn btn-outline btn-sm" onclick="showLeadModal(' + l.id + ')">View</button>';
+      html += '<button class="btn btn-sm" data-todo-dismiss-lead="' + l.id + '" style="background:#87A5B4;color:#fff;font-size:.72rem">Dismiss</button>';
+      html += '</div></div>';
     });
     html += '</div>';
   }
@@ -2472,6 +2474,16 @@ async function renderTodo(container) {
 
   panel.innerHTML = html;
   container.appendChild(panel);
+
+  // Dismiss lead handlers
+  panel.querySelectorAll('[data-todo-dismiss-lead]').forEach(btn => {
+    btn.onclick = async () => {
+      const leadId = btn.getAttribute('data-todo-dismiss-lead');
+      btn.disabled = true; btn.textContent = 'Done';
+      await api('/admin/leads/' + leadId, { method: 'PUT', body: JSON.stringify({ status: 'reviewed' }) });
+      btn.closest('div[style*="border-radius:8px"]').remove();
+    };
+  });
 
   // Red flag review handlers
   panel.querySelectorAll('[data-redflag-user]').forEach(btn => {
@@ -2743,13 +2755,22 @@ async function renderLeads(container) {
     const actionTd = el('td', { style: 'white-space:nowrap' });
     actionTd.appendChild(el('button', { class: 'btn btn-outline btn-sm', onclick: () => showLeadModal(lead.id) }, 'View'));
     if (lead.status === 'new') {
-      actionTd.appendChild(el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:4px', onclick: async () => {
-        if (confirm('Approve ' + lead.name + '? This will create their account and send a welcome email.')) {
-          const res = await api('/admin/approve', { method: 'POST', body: JSON.stringify({ lead_id: lead.id }) });
-          if (res.success) { showApprovalModal(lead.name, lead.email, res.tempPassword); }
-          else alert(res.error || 'Failed');
-        }
-      }}, 'Approve'));
+      if (lead.user_id) {
+        // Account already exists (self-registered) — show dismiss instead of approve
+        actionTd.appendChild(el('button', { class: 'btn btn-sm', style: 'margin-left:4px;background:#87A5B4;color:#fff', onclick: async () => {
+          await api('/admin/leads/' + lead.id, { method: 'PUT', body: JSON.stringify({ status: 'reviewed' }) });
+          renderApp();
+        }}, 'Dismiss'));
+      } else {
+        // No account — show approve
+        actionTd.appendChild(el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:4px', onclick: async () => {
+          if (confirm('Approve ' + lead.name + '? This will create their account and send a welcome email.')) {
+            const res = await api('/admin/approve', { method: 'POST', body: JSON.stringify({ lead_id: lead.id }) });
+            if (res.success) { showApprovalModal(lead.name, lead.email, res.tempPassword); }
+            else alert(res.error || 'Failed');
+          }
+        }}, 'Approve'));
+      }
     }
     tr.appendChild(actionTd);
     tbody.appendChild(tr);
