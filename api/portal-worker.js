@@ -1093,6 +1093,38 @@ export default {
         return json({ draft: null });
       }
 
+      // Get user profile (from lead record)
+      if (path === '/api/profile' && method === 'GET') {
+        const session = await validateSession(env.DB, token);
+        if (!session) return json({ error: 'Not authenticated' }, 401);
+        const user = await env.DB.prepare('SELECT lead_id, email FROM users WHERE id = ?').bind(session.user_id).first();
+        if (!user || !user.lead_id) return json({ profile: { email: user ? user.email : '' } });
+        const lead = await env.DB.prepare('SELECT name, email, phone, home_address, marital_status, partner_name, partner_email FROM leads WHERE id = ?').bind(user.lead_id).first();
+        return json({ profile: lead || { email: user.email } });
+      }
+
+      // Update user profile (updates lead record)
+      if (path === '/api/profile' && method === 'PUT') {
+        const session = await validateSession(env.DB, token);
+        if (!session) return json({ error: 'Not authenticated' }, 401);
+        const user = await env.DB.prepare('SELECT lead_id, email FROM users WHERE id = ?').bind(session.user_id).first();
+        if (!user || !user.lead_id) return json({ error: 'No profile found' }, 404);
+        const data = await parseBody(request);
+        const fields = [];
+        const values = [];
+        if (data.name !== undefined) { fields.push('name = ?'); values.push(data.name); }
+        if (data.phone !== undefined) { fields.push('phone = ?'); values.push(data.phone); }
+        if (data.home_address !== undefined) { fields.push('home_address = ?'); values.push(data.home_address); }
+        if (data.marital_status !== undefined) { fields.push('marital_status = ?'); values.push(data.marital_status); }
+        if (data.partner_name !== undefined) { fields.push('partner_name = ?'); values.push(data.partner_name); }
+        if (data.partner_email !== undefined) { fields.push('partner_email = ?'); values.push(data.partner_email); }
+        if (fields.length === 0) return json({ success: true });
+        fields.push('updated_at = ?'); values.push(now());
+        values.push(user.lead_id);
+        await env.DB.prepare('UPDATE leads SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
+        return json({ success: true });
+      }
+
       // Get my application (strip score data - admin only)
       if (path === '/api/application' && method === 'GET') {
         const session = await validateSession(env.DB, token);
@@ -1337,9 +1369,10 @@ async function renderPortal() {
   const me = await api('/auth/me');
   if (!me.user) { authToken = null; localStorage.removeItem('bsc_portal_token'); return renderLogin(); }
 
-  const [appRes, litterRes] = await Promise.all([api('/application'), api('/litter')]);
+  const [appRes, litterRes, profileRes] = await Promise.all([api('/application'), api('/litter'), api('/profile')]);
   const existing = appRes.application;
   const litter = litterRes.litter;
+  const profile = profileRes.profile || {};
 
   let appContent = '';
   if (existing) {
@@ -1395,6 +1428,36 @@ async function renderPortal() {
     </div>
   </div>\`;
 
+  // Profile section
+  const esc = (s) => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const profileContent = \`<div class="card" style="margin-top:20px">
+    <h2 style="margin-bottom:4px">My Profile</h2>
+    <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:16px">Keep your contact information up to date. This info will auto-fill your adoption application.</p>
+    <div id="profileMsg" style="display:none;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:.88rem"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Full Name</label><input type="text" id="profName" value="\${esc(profile.name)}"></div>
+      <div class="form-group"><label>Email</label><input type="email" id="profEmail" value="\${esc(me.user.email)}" disabled style="background:#f0ece6;color:#6B5B4B"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Phone</label><input type="tel" id="profPhone" value="\${esc(profile.phone)}"></div>
+      <div class="form-group"><label>Home Address</label><input type="text" id="profAddress" value="\${esc(profile.home_address)}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Marital Status</label>
+        <select id="profMarital">
+          <option value="">Select...</option>
+          <option value="Single"\${profile.marital_status === 'Single' ? ' selected' : ''}>Single</option>
+          <option value="Married"\${profile.marital_status === 'Married' ? ' selected' : ''}>Married</option>
+          <option value="Partnered"\${profile.marital_status === 'Partnered' ? ' selected' : ''}>Partnered</option>
+          <option value="Other"\${profile.marital_status === 'Other' ? ' selected' : ''}>Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Partner Name</label><input type="text" id="profPartner" value="\${esc(profile.partner_name)}"></div>
+    </div>
+    <div class="form-group"><label>Partner Email</label><input type="email" id="profPartnerEmail" value="\${esc(profile.partner_email)}" style="max-width:50%"></div>
+    <button class="btn btn-primary" id="saveProfileBtn" onclick="saveProfile()" style="margin-top:8px">Save Profile</button>
+  </div>\`;
+
   document.getElementById('app').innerHTML = \`
   <header><div class="container top-bar">
     <div><h1>My Portal</h1><div class="sub">\${me.user.email}</div></div>
@@ -1406,6 +1469,7 @@ async function renderPortal() {
   <div class="container">
     \${appContent}
     \${litterContent}
+    \${profileContent}
     \${subsContent}
     <div style="text-align:center;margin:24px 0 40px"><a href="#" onclick="disableAccount();return false" style="color:#999;font-size:.78rem;text-decoration:none">Disable my account &amp; unsubscribe from all emails</a></div>
   </div>\`;
@@ -1443,8 +1507,19 @@ async function loadQuestions() {
 }
 
 async function loadDraft() {
-  const res = await api('/application/draft');
-  if (res.draft) formData = res.draft;
+  // Pre-fill from profile first, then overlay draft data on top
+  const [draftRes, profileRes] = await Promise.all([api('/application/draft'), api('/profile')]);
+  const profile = profileRes.profile || {};
+  // Map profile fields to application field names
+  if (profile.name && !formData.full_name) formData.full_name = profile.name;
+  if (profile.email && !formData.email) formData.email = profile.email;
+  if (profile.phone && !formData.phone) formData.phone = profile.phone;
+  if (profile.home_address && !formData.home_address) formData.home_address = profile.home_address;
+  if (profile.marital_status && !formData.marital_status) formData.marital_status = profile.marital_status;
+  if (profile.partner_name && !formData.partner_name) formData.partner_name = profile.partner_name;
+  if (profile.partner_email && !formData.partner_email) formData.partner_email = profile.partner_email;
+  // Draft data takes priority
+  if (draftRes.draft) formData = { ...formData, ...draftRes.draft };
 }
 
 async function saveDraft() {
@@ -1600,6 +1675,35 @@ async function renderApplicationForm() {
   await loadQuestions();
   await loadDraft();
   return '<div id="appContainer"></div>';
+}
+
+async function saveProfile() {
+  const btn = document.getElementById('saveProfileBtn');
+  const msg = document.getElementById('profileMsg');
+  btn.disabled = true; btn.textContent = 'Saving...';
+  const data = {
+    name: document.getElementById('profName').value,
+    phone: document.getElementById('profPhone').value,
+    home_address: document.getElementById('profAddress').value,
+    marital_status: document.getElementById('profMarital').value,
+    partner_name: document.getElementById('profPartner').value,
+    partner_email: document.getElementById('profPartnerEmail').value
+  };
+  const res = await api('/profile', { method: 'PUT', body: JSON.stringify(data) });
+  if (res.success) {
+    msg.style.display = 'block';
+    msg.style.background = 'rgba(122,139,111,.1)';
+    msg.style.color = '#5A6B4F';
+    msg.textContent = 'Profile saved! This info will auto-fill your application.';
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save Profile'; btn.disabled = false; msg.style.display = 'none'; }, 3000);
+  } else {
+    msg.style.display = 'block';
+    msg.style.background = 'rgba(139,58,58,.1)';
+    msg.style.color = '#8B3A3A';
+    msg.textContent = res.error || 'Failed to save';
+    btn.textContent = 'Save Profile'; btn.disabled = false;
+  }
 }
 
 async function toggleSub(type) {
