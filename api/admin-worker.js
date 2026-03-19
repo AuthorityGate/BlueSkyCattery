@@ -1612,19 +1612,27 @@ export default {
         if (!session) return json({ error: 'Forbidden' }, 403);
         const search = url.searchParams.get('search') || '';
 
-        // Ensure admin_notes column exists
+        // Ensure columns exist
         try { await env.DB.prepare("ALTER TABLE users ADD COLUMN admin_notes TEXT").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verification JSON").run(); } catch(e) {}
 
-        let sql = 'SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.verification, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1';
+        let sql = "SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.verification, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1";
         const params = [];
         if (search) {
-          sql += ' AND (LOWER(u.email) LIKE ? OR LOWER(COALESCE(l.name,\'\')) LIKE ? OR LOWER(COALESCE(l.phone,\'\')) LIKE ? OR LOWER(COALESCE(u.admin_notes,\'\')) LIKE ?)';
+          sql += " AND (LOWER(u.email) LIKE ? OR LOWER(COALESCE(l.name,'')) LIKE ? OR LOWER(COALESCE(l.phone,'')) LIKE ? OR LOWER(COALESCE(u.admin_notes,'')) LIKE ?)";
           const s = '%' + search.toLowerCase() + '%';
           params.push(s, s, s, s);
         }
         sql += ' ORDER BY u.created_at DESC';
-        const users = await env.DB.prepare(sql).bind(...params).all();
-        return json({ users: users.results });
+        try {
+          const users = await env.DB.prepare(sql).bind(...params).all();
+          return json({ users: users.results });
+        } catch (err) {
+          // Fallback without verification column if it doesn't exist yet
+          const fallbackSql = "SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id ORDER BY u.created_at DESC";
+          const users = await env.DB.prepare(fallbackSql).all();
+          return json({ users: users.results });
+        }
       }
 
       // Update user
