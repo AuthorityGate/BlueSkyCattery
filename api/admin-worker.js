@@ -1747,7 +1747,7 @@ async function renderTodo(container) {
     data.newLeads.forEach(l => {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
       html += '<div><strong>' + esc(l.name) + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(l.email) + ' &mdash; ' + esc(l.source) + ' &mdash; ' + timeAgo(l.created_at) + '</span></div>';
-      html += '<div style="display:flex;gap:6px"><button class="btn btn-outline btn-sm" onclick="currentTab=\'leads\';renderApp()">Review</button></div>';
+      html += '<div style="display:flex;gap:6px"><button class="btn btn-outline btn-sm" onclick="currentTab=&#39;leads&#39;;renderApp()">Review</button></div>';
       html += '</div>';
     });
     html += '</div>';
@@ -1762,7 +1762,7 @@ async function renderTodo(container) {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
       html += '<div style="display:flex;align-items:center;gap:10px"><span style="background:' + scoreColor + ';color:#fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + a.score + '</span>';
       html += '<div><strong>' + esc(a.full_name||'N/A') + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(a.purpose||'pet') + ' &mdash; ' + timeAgo(a.created_at) + '</span></div></div>';
-      html += '<button class="btn btn-outline btn-sm" onclick="currentTab=\'applications\';renderApp()">Review</button>';
+      html += '<button class="btn btn-outline btn-sm" onclick="currentTab=&#39;applications&#39;;renderApp()">Review</button>';
       html += '</div>';
     });
     html += '</div>';
@@ -2053,7 +2053,7 @@ async function showLeadModal(leadId) {
   html += '<div class="field"><label>Message</label><textarea id="msgBody" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px" placeholder="Type your message to ' + esc(lead.name) + '..."></textarea></div>';
 
   html += '<div class="actions">';
-  html += '<button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Close</button>';
+  html += '<button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Close</button>';
   html += '<button class="btn btn-primary" id="sendMsgBtn">Send Email</button>';
   html += '</div>';
 
@@ -2087,7 +2087,7 @@ function showApprovalModal(name, email, password) {
     '<div class="field"><label>Temporary Password</label><div class="value" style="font-family:monospace;font-size:1.1rem;font-weight:700;color:#A0522D;letter-spacing:1px">' + esc(password) + '</div></div>' +
     '<div class="field"><label>Portal URL</label><div class="value">https://portal.blueskycattery.com</div></div>' +
     '<p style="margin-top:16px;font-size:.85rem;color:#6B5B4B">The applicant received an email with these credentials and a link to the application portal.</p>' +
-    '<div class="actions"><button class="btn btn-primary" onclick="this.closest(\\'.modal-bg\\').remove();renderApp();">Close</button></div>';
+    '<div class="actions"><button class="btn btn-primary" onclick="this.closest(&#39;.modal-bg&#39;).remove();renderApp();">Close</button></div>';
   bg.appendChild(modal);
   document.body.appendChild(bg);
 }
@@ -2287,7 +2287,7 @@ async function showAppModal(appId) {
   html += '<h3 style="margin:16px 0 8px">Admin Decision</h3>';
   html += '<div class="field"><label>Status</label><select id="appStatus"><option value="submitted"' + (app.status==='submitted'?' selected':'') + '>Submitted</option><option value="reviewed"' + (app.status==='reviewed'?' selected':'') + '>Reviewed</option><option value="approved"' + (app.status==='approved'?' selected':'') + '>Approved</option><option value="waitlist"' + (app.status==='waitlist'?' selected':'') + '>Waitlist</option><option value="rejected"' + (app.status==='rejected'?' selected':'') + '>Rejected</option></select></div>';
   html += '<div class="field"><label>Admin Notes</label><textarea id="appNotes" rows="3">' + esc(app.admin_notes || '') + '</textarea></div>';
-  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-outline" id="reanalyzeBtn" style="color:#87A5B4;border-color:#87A5B4">Re-analyze with AI</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
+  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-outline" id="reanalyzeBtn" style="color:#87A5B4;border-color:#87A5B4">Re-analyze with AI</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
 
   modal.innerHTML = html;
   bg.appendChild(modal);
@@ -2413,7 +2413,7 @@ function showAddLitterModal() {
     '<div class="field"><label>Go-Home Date</label><input type="date" id="nlGoHome"></div>' +
     '</div>' +
     '<div class="field" style="margin-top:12px"><label>Notes</label><textarea id="nlNotes" rows="2"></textarea></div>' +
-    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveLitterBtn">Create Litter</button></div>';
+    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveLitterBtn">Create Litter</button></div>';
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
@@ -2455,7 +2455,7 @@ function showKittenEditModal(kittenId, kitten) {
     '</select></div>' +
     '<div class="field"><label>Reserved By (name or email)</label><input type="text" id="ekReservedBy" value="' + esc(kitten.reserved_by || '') + '"></div>' +
     '<div class="field"><label>Notes</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
-    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveKittenBtn">Save Changes</button></div>';
+    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveKittenBtn">Save Changes</button></div>';
 
   bg.appendChild(modal);
   document.body.appendChild(bg);
@@ -2546,7 +2546,7 @@ function showCatModal(cat) {
     '<label style="display:flex;align-items:center;gap:8px;font-size:.88rem"><input type="checkbox" id="catHealth"' + (cat && cat.health_tested ? ' checked' : '') + '> Health Tested</label>' +
     (isEdit ? '<label style="display:flex;align-items:center;gap:8px;font-size:.88rem">Status: <select id="catStatus"><option value="active"' + (cat.status === 'active' ? ' selected' : '') + '>Active</option><option value="inactive"' + (cat.status === 'inactive' ? ' selected' : '') + '>Inactive</option><option value="retired"' + (cat.status === 'retired' ? ' selected' : '') + '>Retired</option></select></label>' : '') +
     '</div>' +
-    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveCatBtn">' + (isEdit ? 'Save Changes' : 'Add Cat') + '</button></div>';
+    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveCatBtn">' + (isEdit ? 'Save Changes' : 'Add Cat') + '</button></div>';
 
   bg.appendChild(modal);
   document.body.appendChild(bg);
@@ -2747,7 +2747,7 @@ function showUserEditModal(user) {
     '<div class="field"><label>Role</label><select id="euRole"><option value="applicant"' + (user.role === 'applicant' ? ' selected' : '') + '>Applicant</option><option value="admin"' + (user.role === 'admin' ? ' selected' : '') + '>Admin</option></select></div>' +
     '<div class="field"><label>Status</label><select id="euStatus"><option value="active"' + (user.status === 'active' ? ' selected' : '') + '>Active</option><option value="suspended"' + (user.status === 'suspended' ? ' selected' : '') + '>Suspended</option><option value="inactive"' + (user.status === 'inactive' ? ' selected' : '') + '>Inactive</option></select></div>' +
     '</div>' +
-    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(\\'.modal-bg\\').remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
+    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
 
   bg.appendChild(modal);
   document.body.appendChild(bg);
