@@ -543,6 +543,21 @@ export default {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')').run();
     } catch (e) { /* table exists */ }
 
+    // Ensure activity_log table exists
+    try {
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, note TEXT, details JSON, created_by INTEGER, created_at TEXT)').run();
+    } catch (e) { /* table exists */ }
+
+    // Add deposit/payment columns to kittens
+    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN deposit_amount REAL').run(); } catch (e) { /* column exists */ }
+    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN deposit_received_date TEXT').run(); } catch (e) { /* column exists */ }
+    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN deposit_method TEXT').run(); } catch (e) { /* column exists */ }
+    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN balance_due REAL').run(); } catch (e) { /* column exists */ }
+    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN payment_notes TEXT').run(); } catch (e) { /* column exists */ }
+
+    // Add go-home checklist column to kittens
+    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN go_home_checklist JSON').run(); } catch (e) { /* column exists */ }
+
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -906,6 +921,11 @@ export default {
         if (data.reserved_by !== undefined) { fields.push('reserved_by = ?'); values.push(data.reserved_by); }
         if (data.reserved_lead_id !== undefined) { fields.push('reserved_lead_id = ?'); values.push(data.reserved_lead_id); }
         if (data.notes !== undefined) { fields.push('notes = ?'); values.push(data.notes); }
+        if (data.deposit_amount !== undefined) { fields.push('deposit_amount = ?'); values.push(data.deposit_amount); }
+        if (data.deposit_received_date !== undefined) { fields.push('deposit_received_date = ?'); values.push(data.deposit_received_date); }
+        if (data.deposit_method !== undefined) { fields.push('deposit_method = ?'); values.push(data.deposit_method); }
+        if (data.balance_due !== undefined) { fields.push('balance_due = ?'); values.push(data.balance_due); }
+        if (data.payment_notes !== undefined) { fields.push('payment_notes = ?'); values.push(data.payment_notes); }
         fields.push('updated_at = ?'); values.push(now());
         values.push(kittenId);
         await env.DB.prepare('UPDATE kittens SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
@@ -1356,6 +1376,17 @@ export default {
           unassignedPhotos = uPhotos.results.map(p => ({ ...p, url: 'https://portal.blueskycattery.com/photos/' + p.r2_key }));
         } catch(e) {}
 
+        // Red flag users - verification failures
+        let redFlagUsers = [];
+        try {
+          const flagged = await env.DB.prepare("SELECT u.id, u.email, u.verification, l.name FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE u.verification IS NOT NULL AND u.verification LIKE '%fail%'").all();
+          redFlagUsers = flagged.results.map(u => {
+            let v = {}; try { v = JSON.parse(u.verification); } catch(e) {}
+            const fails = Object.entries(v).filter(([,val]) => val === 'fail').map(([key]) => key.replace(/_/g, ' '));
+            return { id: u.id, email: u.email, name: u.name, fails };
+          });
+        } catch(e) {}
+
         return json({
           newLeads: newLeads.results,
           pendingApps: pendingApps.results,
@@ -1363,7 +1394,8 @@ export default {
           pendingKittens: pendingKittens.results,
           recentMessages: recentMessages.results,
           upcomingEmails: upcomingEmails,
-          unassignedPhotos: unassignedPhotos
+          unassignedPhotos: unassignedPhotos,
+          redFlagUsers: redFlagUsers
         });
       }
 
@@ -1375,6 +1407,38 @@ export default {
         await env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(msgId).run();
         await writeAuditLog(env.DB, session.user_id, 'message_deleted', { message_id: msgId });
         return json({ success: true });
+      }
+
+      // =====================
+      // ADMIN: GO-HOME CHECKLIST
+      // =====================
+
+      // Update kitten go-home checklist
+      if (path.match(/^\/api\/admin\/kittens\/\d+\/checklist$/) && method === 'PUT') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const kittenId = path.split('/')[4];
+        const data = await parseBody(request);
+        if (!data.checklist) return json({ error: 'checklist object required' }, 400);
+        // Merge with existing checklist
+        const existing = await env.DB.prepare('SELECT go_home_checklist FROM kittens WHERE id = ?').bind(kittenId).first();
+        let merged = {};
+        try { merged = JSON.parse(existing.go_home_checklist || '{}'); } catch (e) {}
+        Object.assign(merged, data.checklist);
+        await env.DB.prepare('UPDATE kittens SET go_home_checklist = ?, updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(merged), now(), kittenId).run();
+        return json({ success: true });
+      }
+
+      // Get kitten go-home checklist
+      if (path.match(/^\/api\/admin\/kittens\/\d+\/checklist$/) && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const kittenId = path.split('/')[4];
+        const row = await env.DB.prepare('SELECT go_home_checklist FROM kittens WHERE id = ?').bind(kittenId).first();
+        let checklist = {};
+        try { checklist = JSON.parse((row && row.go_home_checklist) || '{}'); } catch (e) {}
+        return json({ checklist });
       }
 
       // =====================
@@ -1691,7 +1755,7 @@ export default {
         return json({
           userId,
           identity: { risk: identityRisk, duplicates, inconsistencies: appInconsistencies, relatedApps: allApps.results.length },
-          verification: { status: verificationStatus, score: verificationScore, items: verifyItems.map(i => ({ ...i, value: verification[i.key] || 'not_checked' })), checkedCount },
+          verification: { status: verificationStatus, score: verificationScore, items: verifyItems.map(i => ({ ...i, value: verification[i.key] || 'not_checked', detail: verification[i.key + '_detail'] || '' })), checkedCount },
           overall: { rating: overallRating, score: overallScore, appScore },
         });
       }
@@ -1724,6 +1788,29 @@ export default {
 
         await writeAuditLog(env.DB, session.user_id, 'user_verification_updated', { target_user_id: userId, verification: merged });
         return json({ success: true });
+      }
+
+      // Get activity log for a user
+      if (path.match(/^\/api\/admin\/users\/\d+\/activity$/) && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const userId = path.split('/')[4];
+        const entries = await env.DB.prepare('SELECT a.*, u.email as created_by_email FROM activity_log a LEFT JOIN users u ON a.created_by = u.id WHERE a.user_id = ? ORDER BY a.created_at DESC').bind(userId).all();
+        return json({ entries: entries.results });
+      }
+
+      // Create activity log entry for a user
+      if (path.match(/^\/api\/admin\/users\/\d+\/activity$/) && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const userId = path.split('/')[4];
+        const { type, note, details } = await parseBody(request);
+        if (!type) return json({ error: 'Type is required' }, 400);
+        const validTypes = ['call', 'email', 'note', 'vet_check', 'video_visit', 'verification', 'system'];
+        if (!validTypes.includes(type)) return json({ error: 'Invalid type' }, 400);
+        const result = await env.DB.prepare('INSERT INTO activity_log (user_id, type, note, details, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(userId, type, note || '', details ? JSON.stringify(details) : null, session.user_id, now()).run();
+        return json({ success: true, id: result.meta.last_row_id });
       }
 
       // Reset user password
@@ -2124,7 +2211,7 @@ async function renderTodo(container) {
   html += '<p style="color:#6B5B4B;margin-bottom:20px;font-size:.88rem">Everything that needs your attention, in one place.</p>';
 
   // Count total actions
-  const totalActions = (data.newLeads||[]).length + (data.pendingApps||[]).length + (data.recentMessages||[]).length + (data.pendingKittens||[]).length + (data.unassignedPhotos||[]).length;
+  const totalActions = (data.newLeads||[]).length + (data.pendingApps||[]).length + (data.recentMessages||[]).length + (data.pendingKittens||[]).length + (data.unassignedPhotos||[]).length + (data.redFlagUsers||[]).length;
 
   if (totalActions === 0 && (data.upcomingEmails||[]).length === 0) {
     html += '<div style="text-align:center;padding:40px;color:#7A8B6F"><div style="font-size:2.5rem;margin-bottom:12px">&#10003;</div><h3>All caught up!</h3><p style="color:#6B5B4B">No pending actions right now.</p></div>';
@@ -2185,6 +2272,21 @@ async function renderTodo(container) {
     html += '</div>';
   }
 
+  // Red Flag Users
+  if ((data.redFlagUsers||[]).length > 0) {
+    html += '<div style="margin-bottom:24px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="background:#8B3A3A;color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700">' + data.redFlagUsers.length + '</div><h3 style="margin:0;font-size:1rem">Verification Red Flags</h3></div>';
+    html += '<p style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">These users have failed one or more verification checks and need attention.</p>';
+    data.redFlagUsers.forEach(u => {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(139,58,58,.04);border:1px solid rgba(139,58,58,.15);border-radius:8px;margin-bottom:6px">';
+      html += '<div><strong>' + esc(u.name || u.email) + '</strong>';
+      html += '<br><span style="font-size:.78rem;color:#8B3A3A">Failed: ' + u.fails.join(', ') + '</span></div>';
+      html += '<button class="btn btn-outline btn-sm" data-redflag-user="' + u.id + '">Review</button>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
   // Unassigned Photos
   if ((data.unassignedPhotos||[]).length > 0) {
     html += '<div style="margin-bottom:24px">';
@@ -2221,6 +2323,15 @@ async function renderTodo(container) {
 
   panel.innerHTML = html;
   container.appendChild(panel);
+
+  // Red flag review handlers
+  panel.querySelectorAll('[data-redflag-user]').forEach(btn => {
+    btn.onclick = () => {
+      const userId = btn.getAttribute('data-redflag-user');
+      const user = (data.redFlagUsers||[]).find(u => u.id == userId);
+      if (user) showUserEditModal({ id: user.id, email: user.email, lead_name: user.name, role: 'applicant', status: 'active' });
+    };
+  });
 
   // Populate assign dropdowns for unassigned photos
   if ((data.unassignedPhotos||[]).length > 0) {
@@ -2854,9 +2965,10 @@ async function renderKittens(container) {
 
     const statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
 
-    litterHtml += '<table><thead><tr><th>#</th><th>Name</th><th>Color</th><th>Sex</th><th>Status</th><th>Reserved By</th><th>Price</th><th>Actions</th></tr></thead><tbody>';
+    litterHtml += '<table><thead><tr><th>#</th><th>Name</th><th>Color</th><th>Sex</th><th>Status</th><th>Reserved By</th><th>Deposit</th><th>Price</th><th>Actions</th></tr></thead><tbody>';
     (litter.kittens || []).forEach(k => {
       const statusColor = statusColors[k.status] || '#6B5B4B';
+      const depositIndicator = k.deposit_received_date ? '<span title="Deposit received ' + esc(k.deposit_received_date) + ' via ' + esc(k.deposit_method || '?') + '" style="color:#7A8B6F;font-weight:700;font-size:1.1rem">&#10003;</span>' : (k.status === 'pending' ? '<span title="Deposit pending" style="color:#D4AF37;font-weight:700;font-size:1.1rem">&#9679;</span>' : '<span style="color:#ccc">---</span>');
       litterHtml += '<tr>';
       litterHtml += '<td><strong>' + k.number + '</strong></td>';
       litterHtml += '<td>' + esc(k.name || 'Kitten #' + k.number) + '</td>';
@@ -2864,6 +2976,7 @@ async function renderKittens(container) {
       litterHtml += '<td>' + esc(k.sex || 'TBD') + '</td>';
       litterHtml += '<td><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;background:' + statusColor + ';color:#fff">' + esc(k.status) + '</span></td>';
       litterHtml += '<td>' + esc(k.reserved_by || '---') + '</td>';
+      litterHtml += '<td style="text-align:center">' + depositIndicator + '</td>';
       litterHtml += '<td>$' + (k.price || 1800) + '</td>';
       litterHtml += '<td><button class="btn btn-outline btn-sm" data-kitten-id="' + k.id + '">Edit</button></td>';
       litterHtml += '</tr>';
@@ -2950,8 +3063,13 @@ async function showKittenEditModal(kittenId, kitten) {
   const modal = document.createElement('div');
   modal.className = 'modal';
 
-  // Fetch existing photos
+  // Fetch existing photos and checklist
   const { photos } = await api('/admin/photos/kitten/' + kittenId);
+  let goHomeChecklist = {};
+  if (kitten.status === 'reserved' || kitten.status === 'sold') {
+    const clRes = await api('/admin/kittens/' + kittenId + '/checklist');
+    goHomeChecklist = clRes.checklist || {};
+  }
 
   let photoHtml = '<div class="field"><label>Photos</label>';
   photoHtml += '<div id="ekPhotoGrid" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
@@ -2983,11 +3101,67 @@ async function showKittenEditModal(kittenId, kitten) {
     '</select></div>' +
     '<div class="field"><label>Reserved By (name or email)</label><input type="text" id="ekReservedBy" value="' + esc(kitten.reserved_by || '') + '"></div>' +
     photoHtml +
+    '<div style="border-top:1px solid #D4C5A9;margin:16px 0 12px;padding-top:12px"><h3 style="font-size:.95rem;margin:0 0 10px;color:#A0522D">Payment & Deposit</h3></div>' +
+    '<div class="form-grid">' +
+    '<div class="field"><label>Deposit Amount ($)</label><input type="number" id="ekDepositAmount" step="0.01" value="' + (kitten.deposit_amount || '') + '"></div>' +
+    '<div class="field"><label>Deposit Received Date</label><input type="date" id="ekDepositDate" value="' + esc(kitten.deposit_received_date || '') + '"></div></div>' +
+    '<div class="form-grid">' +
+    '<div class="field"><label>Payment Method</label><select id="ekDepositMethod">' +
+    '<option value="">-- Select --</option>' +
+    '<option value="Cash"' + (kitten.deposit_method === 'Cash' ? ' selected' : '') + '>Cash</option>' +
+    '<option value="Check"' + (kitten.deposit_method === 'Check' ? ' selected' : '') + '>Check</option>' +
+    '<option value="Venmo"' + (kitten.deposit_method === 'Venmo' ? ' selected' : '') + '>Venmo</option>' +
+    '<option value="Zelle"' + (kitten.deposit_method === 'Zelle' ? ' selected' : '') + '>Zelle</option>' +
+    '<option value="PayPal"' + (kitten.deposit_method === 'PayPal' ? ' selected' : '') + '>PayPal</option>' +
+    '<option value="Wire"' + (kitten.deposit_method === 'Wire' ? ' selected' : '') + '>Wire</option>' +
+    '<option value="Other"' + (kitten.deposit_method === 'Other' ? ' selected' : '') + '>Other</option>' +
+    '</select></div>' +
+    '<div class="field"><label>Balance Due ($)</label><input type="number" id="ekBalanceDue" step="0.01" value="' + (kitten.balance_due != null ? kitten.balance_due : '') + '"></div></div>' +
+    '<div class="field"><label>Payment Notes</label><textarea id="ekPaymentNotes" rows="2" style="font-size:.85rem">' + esc(kitten.payment_notes || '') + '</textarea></div>' +
     '<div class="field"><label>Notes</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
+    ((kitten.status === 'reserved' || kitten.status === 'sold') ? (function() {
+      var clItems = [
+        { key: 'spayed_neutered', label: 'Spay/neuter confirmed' },
+        { key: 'vaccinations_current', label: 'Vaccinations current' },
+        { key: 'microchipped', label: 'Microchipped' },
+        { key: 'vet_health_check', label: 'Vet health check complete' },
+        { key: 'adoption_contract_signed', label: 'Adoption contract signed' },
+        { key: 'deposit_received_full', label: 'Deposit received in full' },
+        { key: 'care_packet_prepared', label: 'Care packet prepared' },
+        { key: 'owner_contact_verified', label: 'New owner contact info verified' },
+        { key: 'carrier_transport_arranged', label: 'Carrier/transport arranged' }
+      ];
+      var done = clItems.filter(function(ci) { return goHomeChecklist[ci.key]; }).length;
+      var total = clItems.length;
+      var pct = Math.round((done / total) * 100);
+      var h = '<div style="border-top:1px solid #D4C5A9;margin:16px 0 12px;padding-top:12px">' +
+        '<h3 style="font-size:.95rem;margin:0 0 8px;color:#A0522D">Go-Home Readiness</h3>' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
+        '<span style="font-size:.82rem;font-weight:600;color:#6B5B4B" id="ekChecklistProgress">' + done + '/' + total + ' complete</span>' +
+        '<div style="flex:1;height:8px;background:#E8E0D0;border-radius:4px;overflow:hidden">' +
+        '<div id="ekChecklistBar" style="height:100%;width:' + pct + '%;background:' + (pct === 100 ? '#7A8B6F' : '#D4AF37') + ';border-radius:4px;transition:width .3s"></div>' +
+        '</div></div>';
+      clItems.forEach(function(ci) {
+        h += '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:.85rem;cursor:pointer">' +
+          '<input type="checkbox" data-checklist-key="' + ci.key + '"' + (goHomeChecklist[ci.key] ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:#A0522D">' +
+          '<span>' + esc(ci.label) + '</span></label>';
+      });
+      h += '</div>';
+      return h;
+    })() : '') +
     '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveKittenBtn">Save Changes</button></div>';
 
   bg.appendChild(modal);
   document.body.appendChild(bg);
+
+  // Auto-calculate balance due when deposit or price changes
+  const calcBalance = () => {
+    const price = parseFloat(document.getElementById('ekPrice').value) || 0;
+    const deposit = parseFloat(document.getElementById('ekDepositAmount').value) || 0;
+    document.getElementById('ekBalanceDue').value = (price - deposit).toFixed(2);
+  };
+  document.getElementById('ekDepositAmount').addEventListener('input', calcBalance);
+  document.getElementById('ekPrice').addEventListener('input', calcBalance);
 
   // Photo upload handler
   document.getElementById('ekPhotoUpload').onchange = async (e) => {
@@ -3029,6 +3203,31 @@ async function showKittenEditModal(kittenId, kitten) {
     btn.onclick = () => reassignPhoto(btn.getAttribute('data-photo-reassign'), () => { bg.remove(); showKittenEditModal(kittenId, kitten); });
   });
 
+  // Go-Home Checklist checkbox handlers
+  bg.querySelectorAll('[data-checklist-key]').forEach(cb => {
+    cb.onchange = async () => {
+      const key = cb.getAttribute('data-checklist-key');
+      const val = cb.checked;
+      await api('/admin/kittens/' + kittenId + '/checklist', {
+        method: 'PUT',
+        body: JSON.stringify({ checklist: { [key]: val } })
+      });
+      // Update progress indicator
+      const allCbs = bg.querySelectorAll('[data-checklist-key]');
+      let doneCount = 0;
+      allCbs.forEach(function(c) { if (c.checked) doneCount++; });
+      const totalCount = allCbs.length;
+      const progEl = document.getElementById('ekChecklistProgress');
+      const barEl = document.getElementById('ekChecklistBar');
+      if (progEl) progEl.textContent = doneCount + '/' + totalCount + ' complete';
+      if (barEl) {
+        const newPct = Math.round((doneCount / totalCount) * 100);
+        barEl.style.width = newPct + '%';
+        barEl.style.background = newPct === 100 ? '#7A8B6F' : '#D4AF37';
+      }
+    };
+  });
+
   document.getElementById('saveKittenBtn').onclick = async () => {
     await api('/admin/kittens/' + kittenId, { method: 'PUT', body: JSON.stringify({
       name: document.getElementById('ekName').value,
@@ -3037,6 +3236,11 @@ async function showKittenEditModal(kittenId, kitten) {
       price: parseFloat(document.getElementById('ekPrice').value),
       status: document.getElementById('ekStatus').value,
       reserved_by: document.getElementById('ekReservedBy').value,
+      deposit_amount: document.getElementById('ekDepositAmount').value ? parseFloat(document.getElementById('ekDepositAmount').value) : null,
+      deposit_received_date: document.getElementById('ekDepositDate').value || null,
+      deposit_method: document.getElementById('ekDepositMethod').value || null,
+      balance_due: document.getElementById('ekBalanceDue').value ? parseFloat(document.getElementById('ekBalanceDue').value) : null,
+      payment_notes: document.getElementById('ekPaymentNotes').value || null,
       notes: document.getElementById('ekNotes').value
     })});
     bg.remove();
@@ -3412,8 +3616,9 @@ async function showUserEditModal(user) {
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); }});
   const modal = el('div', { class: 'modal' });
 
-  // Fetch trust rating
+  // Fetch trust rating and activity log
   const trust = await api('/admin/users/' + user.id + '/trust');
+  const activityData = await api('/admin/users/' + user.id + '/activity');
 
   // Overall rating badge
   const ratingColors = { trusted: '#7A8B6F', moderate: '#D4AF37', caution: '#A0522D', high_risk: '#8B3A3A', limited: '#87A5B4' };
@@ -3462,11 +3667,22 @@ async function showUserEditModal(user) {
   }
 
   // ---- VERIFICATION CHECKLIST ----
+  // Get full verification data with details
+  let verifyDetails = {};
+  try { const ud = await api('/admin/users/' + user.id + '/trust'); verifyDetails = ud.verification || {}; } catch(e) {}
+  let fullVerification = {};
+  try { const uRow = await api('/admin/users/' + user.id + '/trust'); fullVerification = {}; } catch(e) {}
+  // Get raw verification JSON for detail notes
+  const rawVerify = trust.verification || {};
+
   html += '<div style="margin-bottom:12px"><strong style="font-size:.88rem">Verification Checklist</strong> <span style="font-size:.75rem;color:#6B5B4B">(' + trust.verification.checkedCount + '/' + trust.verification.items.length + ' checked)</span></div>';
   trust.verification.items.forEach(item => {
     const val = item.value;
     const selectId = 'verify_' + item.key;
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:6px 10px;background:#FDF9F3;border-radius:6px;border:1px solid #e8e2d8">';
+    const detailId = 'verifyDetail_' + item.key;
+    const borderColor = val === 'fail' ? 'rgba(139,58,58,.3)' : val === 'concern' ? 'rgba(212,175,55,.3)' : val === 'pass' ? 'rgba(122,139,111,.3)' : '#e8e2d8';
+    html += '<div style="margin-bottom:8px;padding:8px 10px;background:#FDF9F3;border-radius:6px;border:1px solid ' + borderColor + '">';
+    html += '<div style="display:flex;align-items:center;gap:8px">';
     html += '<select id="' + selectId + '" style="padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.78rem;width:120px">';
     html += '<option value="not_checked"' + (val === 'not_checked' ? ' selected' : '') + '>Not checked</option>';
     html += '<option value="pass"' + (val === 'pass' ? ' selected' : '') + '>&#10003; Pass</option>';
@@ -3475,6 +3691,10 @@ async function showUserEditModal(user) {
     html += '</select>';
     html += '<span style="font-size:.85rem;flex:1">' + esc(item.label) + '</span>';
     html += '<span style="font-size:.72rem;color:#6B5B4B">(' + item.weight + ' pts)</span>';
+    html += '</div>';
+    // Detail field - for recording specifics
+    const detailVal = item.detail || '';
+    html += '<input type="text" id="' + detailId + '" value="' + esc(detailVal) + '" placeholder="Details: vet name, phone, what was said..." style="width:100%;padding:4px 8px;border:1px solid #e8e2d8;border-radius:4px;font-size:.78rem;margin-top:6px;color:#3E3229">';
     html += '</div>';
   });
   html += '<button class="btn btn-sm btn-info" id="saveVerifyBtn" style="margin-top:6px">Save Verification</button>';
@@ -3487,23 +3707,99 @@ async function showUserEditModal(user) {
 
   // Notes
   html += '<div class="field" style="margin-top:12px"><label>Admin Notes</label><textarea id="euNotes" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem" placeholder="Call notes, observations, follow-up reminders...">' + esc(user.admin_notes || '') + '</textarea></div>';
+
+  // ---- ACTIVITY TIMELINE ----
+  html += '<div style="margin-top:16px;border-top:1px solid #D4C5A9;padding-top:16px">';
+  html += '<strong style="font-size:.9rem">Activity Timeline</strong>';
+  // Quick-add bar
+  html += '<div style="display:flex;gap:8px;margin-top:10px;margin-bottom:12px">';
+  html += '<select id="activityType" style="padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px;font-size:.84rem">';
+  html += '<option value="call">&#9742; Call</option>';
+  html += '<option value="email">&#9993; Email</option>';
+  html += '<option value="note">&#9998; Note</option>';
+  html += '<option value="vet_check">&#9877; Vet Check</option>';
+  html += '<option value="video_visit">&#9654; Video Visit</option>';
+  html += '</select>';
+  html += '<input id="activityNote" type="text" placeholder="Add a note..." style="flex:1;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px;font-size:.84rem">';
+  html += '<button class="btn btn-sm btn-primary" id="addActivityBtn">Add</button>';
+  html += '</div>';
+  // Timeline entries
+  html += '<div id="activityTimeline" style="max-height:300px;overflow-y:auto">';
+  const typeIcons = { call: '&#9742;', email: '&#9993;', note: '&#9998;', vet_check: '&#9877;', video_visit: '&#9654;', verification: '&#10003;', system: '&#9881;' };
+  const typeColors = { call: '#4A90D9', email: '#D4AF37', note: '#7A8B6F', vet_check: '#A0522D', video_visit: '#6B5B4B', verification: '#7A8B6F', system: '#87A5B4' };
+  const typeLabels = { call: 'Call', email: 'Email', note: 'Note', vet_check: 'Vet Check', video_visit: 'Video Visit', verification: 'Verification', system: 'System' };
+  (activityData.entries || []).forEach(entry => {
+    const icon = typeIcons[entry.type] || '&#9679;';
+    const color = typeColors[entry.type] || '#6B5B4B';
+    const label = typeLabels[entry.type] || entry.type;
+    html += '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0ebe3">';
+    html += '<div style="min-width:32px;height:32px;background:' + color + ';color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.9rem">' + icon + '</div>';
+    html += '<div style="flex:1">';
+    html += '<div style="font-size:.84rem;font-weight:600;color:' + color + '">' + esc(label) + '</div>';
+    html += '<div style="font-size:.84rem;color:#3E3229;margin-top:2px">' + esc(entry.note || '') + '</div>';
+    html += '<div style="font-size:.72rem;color:#6B5B4B;margin-top:4px">' + timeAgo(entry.created_at) + (entry.created_by_email ? ' &mdash; ' + esc(entry.created_by_email) : '') + '</div>';
+    html += '</div></div>';
+  });
+  if (!activityData.entries || activityData.entries.length === 0) {
+    html += '<div style="font-size:.82rem;color:#6B5B4B;padding:12px 0;text-align:center">No activity logged yet</div>';
+  }
+  html += '</div></div>';
+
+  // ---- COMMUNICATION HISTORY ----
+  if (user.lead_id) {
+    const msgData = await api('/admin/leads/' + user.lead_id);
+    const messages = msgData.messages || [];
+    if (messages.length > 0) {
+      html += '<div style="margin-top:16px;border-top:1px solid #D4C5A9;padding-top:16px">';
+      html += '<strong style="font-size:.9rem">Message History</strong> <span style="font-size:.75rem;color:#6B5B4B">(' + messages.length + ')</span>';
+      html += '<div style="max-height:200px;overflow-y:auto;margin-top:10px">';
+      messages.forEach(msg => {
+        const isOut = msg.direction === 'outbound';
+        const bgColor = isOut ? 'rgba(122,139,111,.08)' : '#F5EDE0';
+        const dirLabel = isOut ? '<span style="color:#7A8B6F;font-weight:700;font-size:.72rem">SENT</span>' : '<span style="color:#87A5B4;font-weight:700;font-size:.72rem">RECEIVED</span>';
+        html += '<div style="background:' + bgColor + ';padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:.82rem">';
+        html += '<div style="display:flex;justify-content:space-between">' + dirLabel + ' <span style="font-size:.72rem;color:#6B5B4B">' + timeAgo(msg.created_at) + '</span></div>';
+        if (msg.subject) html += '<div style="font-weight:600;margin-top:2px">' + esc(msg.subject) + '</div>';
+        html += '<div style="margin-top:2px;color:#3E3229;white-space:pre-wrap;max-height:60px;overflow:hidden">' + esc((msg.body || '').slice(0, 200)) + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+      html += '<button class="btn btn-sm btn-outline" style="margin-top:6px" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ')">Open Full Conversation</button>';
+      html += '</div>';
+    }
+  }
+
   html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
 
   modal.innerHTML = html;
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
+  // Add activity handler
+  document.getElementById('addActivityBtn').onclick = async () => {
+    const type = document.getElementById('activityType').value;
+    const note = document.getElementById('activityNote').value.trim();
+    if (!note) { document.getElementById('activityNote').focus(); return; }
+    const btn = document.getElementById('addActivityBtn');
+    btn.disabled = true; btn.textContent = '...';
+    await api('/admin/users/' + user.id + '/activity', { method: 'POST', body: JSON.stringify({ type, note }) });
+    bg.remove();
+    showUserEditModal(user);
+  };
+
   // Save verification handler
   document.getElementById('saveVerifyBtn').onclick = async () => {
     const verification = {};
     trust.verification.items.forEach(item => {
       verification[item.key] = document.getElementById('verify_' + item.key).value;
+      const detailEl = document.getElementById('verifyDetail_' + item.key);
+      if (detailEl && detailEl.value) verification[item.key + '_detail'] = detailEl.value;
     });
     const btn = document.getElementById('saveVerifyBtn');
     btn.disabled = true; btn.textContent = 'Saving...';
     await api('/admin/users/' + user.id + '/verify', { method: 'PUT', body: JSON.stringify({ verification }) });
     bg.remove();
-    showUserEditModal(user); // Refresh to show updated scores
+    showUserEditModal(user);
   };
 
   document.getElementById('saveUserBtn').onclick = async () => {
