@@ -3579,7 +3579,7 @@ async function renderSocial(container) {
 
   // Configuration section
   html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:16px 20px;border-radius:12px;border:1px solid rgba(212,197,169,.3);margin-bottom:20px">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="document.getElementById(\'socialConfig\').style.display=document.getElementById(\'socialConfig\').style.display===\'none\'?\'block\':\'none\'">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="document.getElementById(&#39;socialConfig&#39;).style.display=document.getElementById(&#39;socialConfig&#39;).style.display===&#39;none&#39;?&#39;block&#39;:&#39;none&#39;">';
   html += '<strong style="font-size:.9rem;color:#A0522D">Account Settings</strong>';
   html += '<span style="font-size:.82rem;color:' + (isConfigured ? '#7A8B6F' : '#8B3A3A') + '">' + (isConfigured ? '&#10003; Connected' : '&#9888; Not configured') + '</span>';
   html += '</div>';
