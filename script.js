@@ -156,12 +156,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     var nameEl = card.querySelector('.kitten-info h3');
                     if (nameEl && k.name) nameEl.textContent = k.name;
 
-                    // Update color
+                    // Update color and sex
                     var colorEl = card.querySelector('.kitten-color');
-                    if (colorEl && k.color && k.color !== 'TBD') {
-                        var colorText = k.color;
-                        if (k.sex) colorText += ' \u2014 ' + (k.sex === 'male' ? 'Male' : k.sex === 'female' ? 'Female' : k.sex);
-                        colorEl.textContent = colorText;
+                    if (colorEl) {
+                        var parts = [];
+                        // Sex badge
+                        var sexLabel = k.sex === 'male' ? 'Male' : k.sex === 'female' ? 'Female' : 'TBD';
+                        var sexIcon = k.sex === 'male' ? '\u2642' : k.sex === 'female' ? '\u2640' : '\u2754';
+                        var sexColor = k.sex === 'male' ? '#87A5B4' : k.sex === 'female' ? '#D4879B' : '#C8B88A';
+                        // Color info
+                        var colorText = (k.color && k.color !== 'TBD' && k.color !== 'Color developing') ? k.color : 'Color developing';
+                        colorEl.innerHTML = '<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:.8rem;font-weight:700;background:' + sexColor + ';color:#fff;margin-right:6px">' + sexIcon + ' ' + sexLabel + '</span>' + colorText;
                     }
 
                     // Hide reserve button if not available
