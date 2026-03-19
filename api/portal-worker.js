@@ -1164,7 +1164,8 @@ header .sub{font-size:.8rem;color:#C8B88A}
 .status-card{text-align:center;padding:24px}
 .status-card .badge{font-size:.9rem;padding:6px 16px}
 .hidden{display:none!important}
-@media(max-width:600px){.form-row{grid-template-columns:1fr}}
+.card table{width:100%}.card table th,.card table td{text-align:left;padding:10px 12px;font-size:.88rem;border-bottom:1px solid #e8e2d8}.card table th{font-weight:600;color:#6B5B4B;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px}.card table tr:last-child td{border-bottom:none}
+@media(max-width:600px){.form-row{grid-template-columns:1fr}#subsGrid{grid-template-columns:1fr!important}}
 </style>
 </head>
 <body>
@@ -1336,28 +1337,78 @@ async function renderPortal() {
   const me = await api('/auth/me');
   if (!me.user) { authToken = null; localStorage.removeItem('bsc_portal_token'); return renderLogin(); }
 
-  const { application: existing } = await api('/application');
+  const [appRes, litterRes] = await Promise.all([api('/application'), api('/litter')]);
+  const existing = appRes.application;
+  const litter = litterRes.litter;
 
-  let content = '';
+  let appContent = '';
   if (existing) {
     const statusMap = { submitted: 'Your application is under review', reviewed: 'Your application has been reviewed', approved: 'Congratulations! Your application has been approved!', rejected: 'Unfortunately, your application was not approved at this time.' };
-    content = \`<div class="card"><div class="status-card">
+    appContent = \`<div class="card"><div class="status-card">
       <div style="font-size:2.5rem;margin-bottom:12px">\${existing.status === 'approved' ? '&#127881;' : existing.status === 'rejected' ? '&#128532;' : '&#128203;'}</div>
       <h2>Application \${existing.status.charAt(0).toUpperCase() + existing.status.slice(1)}</h2>
       <p>\${statusMap[existing.status] || 'Status: ' + existing.status}</p>
       <p style="font-size:.85rem;color:#6B5B4B">Submitted: \${existing.created_at}</p>
     </div></div>\`;
   } else {
-    content = await renderApplicationForm();
+    appContent = await renderApplicationForm();
   }
+
+  // Current litter info
+  let litterContent = '';
+  if (litter) {
+    const kittens = litter.kittens || [];
+    const statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
+    let kittenRows = '';
+    kittens.forEach(k => {
+      const color = statusColors[k.status] || '#6B5B4B';
+      const sexIcon = k.sex === 'male' ? '&#9794;' : k.sex === 'female' ? '&#9792;' : '?';
+      kittenRows += '<tr><td><strong>' + (k.name || 'Kitten #' + k.number) + '</strong></td><td>' + sexIcon + ' ' + (k.sex || 'TBD') + '</td><td>' + (k.color || 'Developing') + '</td><td><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;color:#fff;background:' + color + ';text-transform:uppercase">' + k.status + '</span></td></tr>';
+    });
+    litterContent = \`<div class="card" style="margin-top:20px">
+      <h2 style="margin-bottom:4px">Current Litter: \${litter.litter_code || ''}</h2>
+      <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:16px">\${litter.sire_name || ''} x \${litter.dam_name || ''} &mdash; Born: \${litter.born_date || 'TBD'} &mdash; Go-Home: \${litter.go_home_date || 'TBD'}</p>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid #D4C5A9"><th style="text-align:left;padding:8px;font-size:.85rem">Name</th><th style="text-align:left;padding:8px;font-size:.85rem">Sex</th><th style="text-align:left;padding:8px;font-size:.85rem">Color</th><th style="text-align:left;padding:8px;font-size:.85rem">Status</th></tr></thead>
+        <tbody>\${kittenRows}</tbody>
+      </table>
+    </div>\`;
+  }
+
+  // Subscription preferences
+  const subsContent = \`<div class="card" style="margin-top:20px">
+    <h2 style="margin-bottom:4px">Stay Connected</h2>
+    <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:16px">Manage your email preferences below.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="subsGrid">
+      <div style="padding:20px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:10px;text-align:center">
+        <div style="font-size:1.5rem;margin-bottom:8px">&#128231;</div>
+        <h3 style="font-size:.95rem;margin-bottom:4px">Newsletter</h3>
+        <p style="font-size:.82rem;color:#6B5B4B;margin-bottom:12px">Cattery updates, cat care tips, and the occasional adorable photo.</p>
+        <button class="btn btn-primary" style="width:100%;font-size:.85rem" id="subNewsletter" onclick="toggleSub('newsletter')">Subscribe</button>
+      </div>
+      <div style="padding:20px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:10px;text-align:center">
+        <div style="font-size:1.5rem;margin-bottom:8px">&#128049;</div>
+        <h3 style="font-size:.95rem;margin-bottom:4px">Litter Notifications</h3>
+        <p style="font-size:.82rem;color:#6B5B4B;margin-bottom:12px">Be the first to know when new kittens are born or available.</p>
+        <button class="btn btn-primary" style="width:100%;font-size:.85rem" id="subWaitlist" onclick="toggleSub('waitlist')">Join Waitlist</button>
+      </div>
+    </div>
+  </div>\`;
 
   document.getElementById('app').innerHTML = \`
   <header><div class="container top-bar">
-    <div><h1>Application Portal</h1><div class="sub">\${me.user.email}</div></div>
-    <a href="#" onclick="disableAccount();return false" style="color:rgba(255,255,255,.4);font-size:.75rem;text-decoration:none">Delete Account</a>
-    <button class="btn btn-outline" onclick="logout()">Logout</button>
+    <div><h1>My Portal</h1><div class="sub">\${me.user.email}</div></div>
+    <div style="display:flex;gap:12px;align-items:center">
+      <a href="https://blueskycattery.com" style="color:#C8B88A;font-size:.8rem;text-decoration:none">Back to Website</a>
+      <button class="btn btn-outline" onclick="logout()">Logout</button>
+    </div>
   </div></header>
-  <div class="container">\${content}</div>\`;
+  <div class="container">
+    \${appContent}
+    \${litterContent}
+    \${subsContent}
+    <div style="text-align:center;margin:24px 0 40px"><a href="#" onclick="disableAccount();return false" style="color:#999;font-size:.78rem;text-decoration:none">Disable my account &amp; unsubscribe from all emails</a></div>
+  </div>\`;
 
   // If showing the wizard, render the first step
   if (!existing && document.getElementById('appContainer')) {
@@ -1549,6 +1600,28 @@ async function renderApplicationForm() {
   await loadQuestions();
   await loadDraft();
   return '<div id="appContainer"></div>';
+}
+
+async function toggleSub(type) {
+  const btn = document.getElementById(type === 'newsletter' ? 'subNewsletter' : 'subWaitlist');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Signing up...';
+  const me = await api('/auth/me');
+  const res = await fetch(API + '/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: me.user.email, email: me.user.email, type })
+  }).then(r => r.json());
+  if (res.success) {
+    btn.textContent = 'Subscribed!';
+    btn.style.background = '#7A8B6F';
+    btn.style.cursor = 'default';
+  } else {
+    btn.textContent = origText;
+    btn.disabled = false;
+    alert(res.error || 'Something went wrong');
+  }
 }
 
 function logout() {
