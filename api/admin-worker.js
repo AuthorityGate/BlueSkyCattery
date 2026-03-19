@@ -505,58 +505,33 @@ async function writeAuditLog(db, userId, action, details) {
 
 export default {
   async fetch(request, env) {
-    // Set Brevo key from environment secret
     _brevoKey = env.BREVO_API_KEY || null;
 
-    // Ensure sessions table exists
+    // Ensure all tables and columns exist - batched into one DB round-trip
     try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure audit_log table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, details TEXT, created_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure config table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure cats table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS cats (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, breed TEXT, role TEXT, sex TEXT, color TEXT, bio TEXT, photo_url TEXT, registration TEXT, health_tested INTEGER DEFAULT 0, status TEXT DEFAULT \'active\', sort_order INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure email_schedules table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS email_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, template_name TEXT, subject TEXT, body_template TEXT, trigger_event TEXT, days_after INTEGER DEFAULT 0, active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure grading_config table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS grading_config (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, key TEXT, value TEXT, updated_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure photos table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')').run();
-    } catch (e) { /* table exists */ }
-
-    // Ensure activity_log table exists
-    try {
-      await env.DB.prepare('CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, note TEXT, details JSON, created_by INTEGER, created_at TEXT)').run();
-    } catch (e) { /* table exists */ }
-
-    // Add deposit/payment columns to kittens
-    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN deposit_amount REAL').run(); } catch (e) { /* column exists */ }
-    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN deposit_received_date TEXT').run(); } catch (e) { /* column exists */ }
-    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN deposit_method TEXT').run(); } catch (e) { /* column exists */ }
-    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN balance_due REAL').run(); } catch (e) { /* column exists */ }
-    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN payment_notes TEXT').run(); } catch (e) { /* column exists */ }
-
-    // Add go-home checklist column to kittens
-    try { await env.DB.prepare('ALTER TABLE kittens ADD COLUMN go_home_checklist JSON').run(); } catch (e) { /* column exists */ }
+      await env.DB.batch([
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER, role TEXT, expires_at TEXT)'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, details TEXT, created_at TEXT)'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS cats (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, breed TEXT, role TEXT, sex TEXT, color TEXT, bio TEXT, photo_url TEXT, registration TEXT, health_tested INTEGER DEFAULT 0, status TEXT DEFAULT \'active\', sort_order INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS email_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, template_name TEXT, subject TEXT, body_template TEXT, trigger_event TEXT, days_after INTEGER DEFAULT 0, active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT)'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS grading_config (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, key TEXT, value TEXT, updated_at TEXT)'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, r2_key TEXT NOT NULL, filename TEXT, sort_order INTEGER DEFAULT 0, uploaded_at TEXT, source TEXT DEFAULT \'admin\')'),
+        env.DB.prepare('CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, note TEXT, details JSON, created_by INTEGER, created_at TEXT)'),
+      ]);
+    } catch(e) {}
+    // Column migrations (can't batch ALTER TABLE - they throw on existing columns)
+    const alters = [
+      'ALTER TABLE kittens ADD COLUMN deposit_amount REAL',
+      'ALTER TABLE kittens ADD COLUMN deposit_received_date TEXT',
+      'ALTER TABLE kittens ADD COLUMN deposit_method TEXT',
+      'ALTER TABLE kittens ADD COLUMN balance_due REAL',
+      'ALTER TABLE kittens ADD COLUMN payment_notes TEXT',
+      'ALTER TABLE kittens ADD COLUMN go_home_checklist JSON',
+      'ALTER TABLE users ADD COLUMN admin_notes TEXT',
+      'ALTER TABLE users ADD COLUMN verification JSON',
+    ];
+    for (const sql of alters) { try { await env.DB.prepare(sql).run(); } catch(e) {} }
 
     const url = new URL(request.url);
     const path = url.pathname;
@@ -1611,10 +1586,6 @@ export default {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
         const search = url.searchParams.get('search') || '';
-
-        // Ensure columns exist
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN admin_notes TEXT").run(); } catch(e) {}
-        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verification JSON").run(); } catch(e) {}
 
         let sql = "SELECT u.id, u.email, u.role, u.status, u.lead_id, u.welcome_sent_at, u.admin_notes, u.verification, u.created_at, u.updated_at, l.name as lead_name, l.phone as lead_phone FROM users u LEFT JOIN leads l ON u.lead_id = l.id WHERE 1=1";
         const params = [];
