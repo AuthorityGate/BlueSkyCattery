@@ -869,22 +869,42 @@ export default {
               const matched = [];
               const unmatched = [];
 
+              // Try to match subject line to a cat/kitten name (fallback for all unmatched files)
+              let subjectEntity = null;
+              const subjectClean = (subject || '').replace(/^(re:|fwd?:|photos?\s*(of|for)?:?\s*)/gi, '').trim();
+              if (subjectClean) {
+                const subKitten = await env.DB.prepare('SELECT id, name FROM kittens WHERE LOWER(name) = LOWER(?)').bind(subjectClean).first();
+                if (subKitten) {
+                  subjectEntity = { type: 'kitten', id: subKitten.id, name: subKitten.name };
+                } else {
+                  const subCat = await env.DB.prepare('SELECT id, name FROM cats WHERE LOWER(name) = LOWER(?)').bind(subjectClean).first();
+                  if (subCat) subjectEntity = { type: 'cat', id: subCat.id, name: subCat.name };
+                }
+              }
+
               for (const att of imageAttachments) {
                 const filename = att.Name || att.name || 'photo.jpg';
                 const content = att.Content || att.content || '';
                 if (!content) { unmatched.push(filename + ' (no data)'); continue; }
 
-                // Extract name from filename: "Hannah2.jpg" -> "Hannah", "Chili_3.png" -> "Chili"
+                // Try 1: Match by filename - "Hannah2.jpg" -> "Hannah"
                 const baseName = filename.replace(/\.[^.]+$/, '').replace(/[\d_\-\s]+$/, '').trim();
-
-                // Try to match to kitten first, then cat
                 let entityType = null, entityId = null, entityName = null;
-                const kitten = await env.DB.prepare('SELECT id, name FROM kittens WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
-                if (kitten) {
-                  entityType = 'kitten'; entityId = kitten.id; entityName = kitten.name;
-                } else {
-                  const cat = await env.DB.prepare('SELECT id, name FROM cats WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
-                  if (cat) { entityType = 'cat'; entityId = cat.id; entityName = cat.name; }
+                if (baseName && baseName.length > 1) {
+                  const kitten = await env.DB.prepare('SELECT id, name FROM kittens WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
+                  if (kitten) {
+                    entityType = 'kitten'; entityId = kitten.id; entityName = kitten.name;
+                  } else {
+                    const cat = await env.DB.prepare('SELECT id, name FROM cats WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
+                    if (cat) { entityType = 'cat'; entityId = cat.id; entityName = cat.name; }
+                  }
+                }
+
+                // Try 2: Fall back to subject line match
+                if (!entityType && subjectEntity) {
+                  entityType = subjectEntity.type;
+                  entityId = subjectEntity.id;
+                  entityName = subjectEntity.name;
                 }
 
                 if (entityType && entityId) {
@@ -909,7 +929,8 @@ export default {
                       .bind('https://portal.blueskycattery.com/photos/' + r2Key, now(), entityId).run();
                   }
 
-                  matched.push(filename + ' -> ' + entityType + ' ' + entityName);
+                  const matchMethod = (baseName && baseName.length > 1 && entityName && baseName.toLowerCase() === entityName.toLowerCase()) ? '(filename)' : '(subject)';
+                  matched.push(filename + ' -> ' + entityType + ' ' + entityName + ' ' + matchMethod);
                 } else {
                   // Store as unassigned - admin can assign later from Todo page
                   const ext = filename.split('.').pop().toLowerCase();
@@ -925,8 +946,10 @@ export default {
 
               // Send confirmation back to sender
               let report = 'Photo intake processed ' + imageAttachments.length + ' image(s).\n\n';
+              if (subjectEntity && matched.some(m => m.includes('(subject)'))) report += 'Subject line "' + subjectClean + '" matched to ' + subjectEntity.type + ' ' + subjectEntity.name + '.\n\n';
               if (matched.length) report += 'MATCHED:\n' + matched.map(m => '  ✓ ' + m).join('\n') + '\n\n';
               if (unmatched.length) report += 'NOT MATCHED (upload manually via admin portal):\n' + unmatched.map(u => '  ✗ ' + u).join('\n') + '\n';
+              report += '\nTip: Name files after the cat/kitten (Hannah1.jpg) OR put the name in the subject line.\n';
               report += '\n---\nManage all photos: https://admin.blueskycattery.com';
 
               await sendEmail(fromEmail, 'Photo Upload Report', report, 'Admin');
