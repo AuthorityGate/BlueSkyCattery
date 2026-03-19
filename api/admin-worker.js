@@ -411,6 +411,8 @@ RESPOND WITH ONLY VALID JSON, no markdown, no explanation outside the JSON.`;
 
 // ---- Brevo CRM Sync ----
 
+// CRM pipeline lists: Leads(5) -> Approved(6) -> Active(7) -> Adopters(10) or Rejected(8)/Waitlist(9)/Flagged(11)
+// Separate public signup lists (in portal-worker): Newsletter(12), Litter Waitlist(13)
 const BREVO_LISTS = { leads: 5, approved: 6, active: 7, rejected: 8, waitlist: 9, adopters: 10, flagged: 11 };
 
 let _brevoKey = null;

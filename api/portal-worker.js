@@ -424,6 +424,8 @@ RESPOND WITH ONLY VALID JSON, no markdown, no explanation outside the JSON.`;
 
 // ---- Brevo CRM Sync ----
 
+// CRM pipeline lists (adoption flow): Leads(5) -> Approved(6) -> Active(7) -> Adopters(10) or Rejected(8)/Waitlist(9)/Flagged(11)
+// Separate signup lists: Newsletter(12), Litter Waitlist(13) — public opt-in, not part of adoption pipeline
 const BREVO_LISTS = { leads: 5, approved: 6, active: 7, rejected: 8, waitlist: 9, adopters: 10, flagged: 11 };
 
 async function syncToBrevoCRM(lead, listId, extraAttrs) {
@@ -739,8 +741,8 @@ export default {
         const firstName = (name || '').split(' ')[0] || '';
         const lastName = (name || '').split(' ').slice(1).join(' ') || '';
         const lists = [];
-        if (type === 'newsletter' || type === 'both') lists.push(12); // Newsletter
-        if (type === 'waitlist' || type === 'both') lists.push(13); // Litter Waitlist
+        if (type === 'newsletter' || type === 'both') lists.push(12); // Newsletter (public opt-in, NOT CRM waitlist)
+        if (type === 'waitlist' || type === 'both') lists.push(13); // Litter Waitlist (public opt-in for new litter alerts, NOT application waitlist list 9)
         if (lists.length === 0) lists.push(12); // Default to newsletter
 
         // Add to Brevo
