@@ -672,17 +672,26 @@ export default {
 
         // Auto-create account if password provided
         let accountToken = null;
+        let needsVerification = false;
         if (data.password && data.password.length >= 8) {
-          const existingUser = await env.DB.prepare('SELECT id, password_hash, status FROM users WHERE email = ?').bind(email).first();
+          // Ensure verify columns exist
+          try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
+          try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
+
+          const existingUser = await env.DB.prepare('SELECT id, password_hash, status, email_verified FROM users WHERE email = ?').bind(email).first();
           if (!existingUser) {
             const passwordHash = await hashPassword(data.password);
-            const userResult = await env.DB.prepare(
-              'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-            ).bind(leadId, email, passwordHash, 'applicant', 'active', now(), now()).run();
-            accountToken = await createSession(env.DB, userResult.meta.last_row_id, 'applicant');
-            await updateBrevoContact(email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], []);
-          } else if (existingUser.status === 'active') {
-            // Existing account - try to log them in
+            const verifyToken = generateToken();
+            await env.DB.prepare(
+              'INSERT INTO users (lead_id, email, password_hash, role, status, email_verified, verify_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            ).bind(leadId, email, passwordHash, 'applicant', 'active', 0, verifyToken, now(), now()).run();
+
+            // Send verification email
+            const verifyUrl = 'https://portal.blueskycattery.com/?verify=' + verifyToken;
+            await sendEmail(email, 'Blue Sky Cattery - Verify Your Email',
+              'Welcome to Blue Sky Cattery! Thank you for your kitten reservation.\n\nPlease verify your email to access your portal:\n\n' + verifyUrl + '\n\nOnce verified, you can complete your full adoption application.\n\nWarm regards,\nBlue Sky Cattery', name);
+            needsVerification = true;
+          } else if (existingUser.status === 'active' && existingUser.email_verified !== 0) {
             const valid = await verifyPassword(data.password, existingUser.password_hash);
             if (valid) {
               accountToken = await createSession(env.DB, existingUser.id, 'applicant');
@@ -690,7 +699,7 @@ export default {
           }
         }
 
-        return json({ success: true, message: 'Reservation saved', token: accountToken });
+        return json({ success: true, message: needsVerification ? 'Reservation saved! Check your email to verify and access the portal.' : 'Reservation saved', token: accountToken, needsVerification });
       }
 
       // Public kitten availability for website
@@ -962,6 +971,11 @@ export default {
           return json({ error: 'Invalid credentials' }, 401);
         }
 
+        // Check email verification (skip for admin accounts and legacy accounts without the column)
+        if (user.role !== 'admin' && user.email_verified === 0) {
+          return json({ error: 'Please verify your email before logging in. Check your inbox for a verification link.', needsVerification: true, email }, 401);
+        }
+
         const sessionToken = await createSession(env.DB, user.id, user.role);
         return json({ success: true, token: sessionToken, role: user.role });
       }
@@ -1014,10 +1028,17 @@ export default {
           return json({ error: 'Password must be at least 8 characters' }, 400);
         }
 
-        const existingUser = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+        const existingUser = await env.DB.prepare('SELECT id, email_verified FROM users WHERE email = ?').bind(email).first();
         if (existingUser) {
+          if (existingUser.email_verified === 0) {
+            return json({ error: 'An account exists but email is not verified. Check your inbox or request a new verification email.', needsVerification: true, email }, 400);
+          }
           return json({ error: 'An account already exists with this email. Please log in instead.' }, 400);
         }
+
+        // Ensure verify columns exist
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
 
         let leadId;
         const existingLead = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
@@ -1032,22 +1053,68 @@ export default {
         }
 
         const passwordHash = await hashPassword(password);
+        const verifyToken = generateToken();
         const userResult = await env.DB.prepare(
-          'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).bind(leadId, email, passwordHash, 'applicant', 'active', now(), now()).run();
-        const userId = userResult.meta.last_row_id;
+          'INSERT INTO users (lead_id, email, password_hash, role, status, email_verified, verify_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(leadId, email, passwordHash, 'applicant', 'active', 0, verifyToken, now(), now()).run();
 
-        const sessionToken = await createSession(env.DB, userId, 'applicant');
+        // Send verification email
+        const verifyUrl = 'https://portal.blueskycattery.com/?verify=' + verifyToken;
+        await sendEmail(email, 'Blue Sky Cattery - Verify Your Email',
+          'Welcome to Blue Sky Cattery!\n\nPlease verify your email address by clicking the link below:\n\n' + verifyUrl + '\n\nThis link expires in 24 hours.\n\nIf you did not create this account, you can safely ignore this email.\n\nWarm regards,\nBlue Sky Cattery', name);
 
         // Sync to Brevo
         await syncToBrevoCRM({ name, email, source: 'self_register', status: 'new' }, BREVO_LISTS.leads, {});
-        await updateBrevoContact(email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]);
 
         // Notify admin
         await sendEmail('Deanna@blueskycattery.com', 'New Self-Registration: ' + name,
-          'A new user registered directly on the portal.\n\nName: ' + name + '\nEmail: ' + email + '\n\nThey now have access to fill out the adoption application.\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
+          'A new user registered directly on the portal.\n\nName: ' + name + '\nEmail: ' + email + '\n\nThey need to verify their email before accessing the portal.\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
 
-        return json({ success: true, token: sessionToken });
+        return json({ success: true, needsVerification: true, message: 'Account created! Check your email to verify.' });
+      }
+
+      // Verify email
+      if (path === '/api/auth/verify' && method === 'POST') {
+        const { token: verifyToken } = await parseBody(request);
+        if (!verifyToken) return json({ error: 'Verification token required' }, 400);
+
+        // Ensure columns exist
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
+
+        const user = await env.DB.prepare('SELECT * FROM users WHERE verify_token = ? AND status = ?').bind(verifyToken, 'active').first();
+        if (!user) return json({ error: 'Invalid or expired verification link.' }, 400);
+
+        await env.DB.prepare('UPDATE users SET email_verified = 1, verify_token = NULL, updated_at = ? WHERE id = ?').bind(now(), user.id).run();
+
+        // Now move to approved in Brevo
+        await updateBrevoContact(user.email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]);
+
+        const sessionToken = await createSession(env.DB, user.id, user.role);
+        return json({ success: true, token: sessionToken, message: 'Email verified! You are now logged in.' });
+      }
+
+      // Resend verification email
+      if (path === '/api/auth/resend-verify' && method === 'POST') {
+        const { email } = await parseBody(request);
+        if (!email) return json({ error: 'Email required' }, 400);
+
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0").run(); } catch(e) {}
+        try { await env.DB.prepare("ALTER TABLE users ADD COLUMN verify_token TEXT").run(); } catch(e) {}
+
+        const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
+        if (!user || user.email_verified === 1) {
+          return json({ success: true, message: 'If an unverified account exists, a new verification email has been sent.' });
+        }
+
+        const verifyToken = generateToken();
+        await env.DB.prepare('UPDATE users SET verify_token = ?, updated_at = ? WHERE id = ?').bind(verifyToken, now(), user.id).run();
+
+        const verifyUrl = 'https://portal.blueskycattery.com/?verify=' + verifyToken;
+        await sendEmail(email, 'Blue Sky Cattery - Verify Your Email',
+          'Please verify your email address by clicking the link below:\n\n' + verifyUrl + '\n\nThis link expires in 24 hours.\n\n- Blue Sky Cattery', email);
+
+        return json({ success: true, message: 'Verification email sent. Check your inbox.' });
       }
 
       if (path === '/api/auth/logout' && method === 'POST') {
@@ -1413,8 +1480,13 @@ async function renderLogin() {
       window.history.replaceState({}, '', '/');
       renderPortal();
     } else {
-      document.getElementById('loginError').textContent = res.error || 'Login failed';
-      document.getElementById('loginError').classList.remove('hidden');
+      const errEl = document.getElementById('loginError');
+      if (res.needsVerification) {
+        errEl.innerHTML = (res.error || 'Email not verified.') + ' <a href="#" style="color:#A0522D" onclick="resendVerify(\'' + email + '\');return false">Resend verification email</a>';
+      } else {
+        errEl.textContent = res.error || 'Login failed';
+      }
+      errEl.classList.remove('hidden');
     }
   };
 
@@ -1461,12 +1533,18 @@ async function renderLogin() {
     const btn = document.getElementById('registerBtn');
     btn.disabled = true; btn.textContent = 'Creating account...';
     const res = await api('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password: pass }) });
-    if (res.success) {
+    if (res.success && res.needsVerification) {
+      document.getElementById('registerForm').innerHTML = '<div style="text-align:center;padding:16px"><div style="font-size:2rem;margin-bottom:12px">&#9993;</div><h2 style="color:#7A8B6F;margin-bottom:8px">Check Your Email!</h2><p style="color:#6B5B4B;margin-bottom:16px">We sent a verification link to <strong>' + email + '</strong>. Click the link to activate your account.</p><p style="font-size:.82rem;color:#6B5B4B">Didn\'t get it? <a href="#" style="color:#A0522D" onclick="resendVerify(\'' + email + '\');return false">Resend verification email</a></p><p style="margin-top:12px"><a href="#" onclick="renderLogin();return false" style="color:#A0522D;font-size:.85rem">Back to login</a></p></div>';
+    } else if (res.success && res.token) {
       authToken = res.token;
       localStorage.setItem('bsc_portal_token', res.token);
       renderPortal();
     } else {
-      document.getElementById('registerError').textContent = res.error || 'Registration failed';
+      let errMsg = res.error || 'Registration failed';
+      if (res.needsVerification) {
+        errMsg += ' <a href="#" style="color:#A0522D" onclick="resendVerify(\'' + email + '\');return false">Resend verification</a>';
+      }
+      document.getElementById('registerError').innerHTML = errMsg;
       document.getElementById('registerError').classList.remove('hidden');
       btn.disabled = false; btn.textContent = 'Create Account';
     }
@@ -1857,6 +1935,11 @@ async function saveProfile() {
   }
 }
 
+async function resendVerify(email) {
+  const res = await api('/auth/resend-verify', { method: 'POST', body: JSON.stringify({ email }) });
+  alert(res.message || 'Verification email sent. Check your inbox.');
+}
+
 async function toggleSubWithPrefs() {
   const btn = document.getElementById('subWaitlist');
   btn.disabled = true; btn.textContent = 'Joining...';
@@ -1915,8 +1998,24 @@ async function disableAccount() {
 
 // Init
 (async () => {
-  // Check for token from reservation redirect
   const urlParams = new URLSearchParams(window.location.search);
+
+  // Handle email verification link
+  const verifyToken = urlParams.get('verify');
+  if (verifyToken) {
+    window.history.replaceState({}, '', '/');
+    const res = await api('/auth/verify', { method: 'POST', body: JSON.stringify({ token: verifyToken }) });
+    if (res.success && res.token) {
+      authToken = res.token;
+      localStorage.setItem('bsc_portal_token', res.token);
+      return renderPortal();
+    } else {
+      document.getElementById('app').innerHTML = '<div class="login-page"><div class="login-box" style="text-align:center"><h1>Verification Failed</h1><p style="color:#8B3A3A;margin:16px 0">' + (res.error || 'Invalid or expired link.') + '</p><a href="/" class="btn btn-primary">Back to Login</a></div></div>';
+      return;
+    }
+  }
+
+  // Check for token from reservation redirect
   const redirectToken = urlParams.get('token');
   if (redirectToken) {
     authToken = redirectToken;

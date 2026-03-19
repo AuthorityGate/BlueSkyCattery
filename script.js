@@ -339,6 +339,13 @@ function submitReserveForm(e) {
     .then(function (result) {
         if (result.success && result.token) {
             window.location.href = 'https://portal.blueskycattery.com/?token=' + result.token;
+        } else if (result.success && result.needsVerification) {
+            // Show verification message instead of redirecting
+            var form = document.getElementById('reservationForm');
+            var success = document.getElementById('formSuccess');
+            form.style.display = 'none';
+            success.style.display = 'block';
+            success.innerHTML = '<div class="success-icon">&#9993;</div><h3>Check Your Email!</h3><p>Your reservation has been saved. We sent a verification link to <strong>' + data.email + '</strong>.</p><p style="font-size:.85rem;color:#6B5B4B;margin-top:8px">Click the link in your email to access the Adoption Portal and complete your application.</p><button class="btn btn-secondary" onclick="closeReservation()">Close</button>';
         } else if (result.success) {
             window.location.href = 'thanks.html';
         } else {
