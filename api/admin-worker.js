@@ -1879,6 +1879,105 @@ export default {
       }
 
       // =====================
+      // SOCIAL MEDIA POSTING
+      // =====================
+
+      // Post to Facebook Page
+      if (path === '/api/admin/social/facebook' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const data = await parseBody(request);
+        const { message, photo_url } = data;
+        if (!message) return json({ error: 'Message is required' }, 400);
+
+        // Get Facebook credentials from config
+        const fbPageId = await env.DB.prepare("SELECT value FROM config WHERE key = 'fb_page_id'").first();
+        const fbToken = await env.DB.prepare("SELECT value FROM config WHERE key = 'fb_page_token'").first();
+        if (!fbPageId || !fbToken) return json({ error: 'Facebook not configured. Go to Settings and add fb_page_id and fb_page_token.' }, 400);
+
+        try {
+          let result;
+          if (photo_url) {
+            // Photo post
+            const res = await fetch('https://graph.facebook.com/v19.0/' + fbPageId.value + '/photos', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: photo_url, message, access_token: fbToken.value })
+            });
+            result = await res.json();
+          } else {
+            // Text post
+            const res = await fetch('https://graph.facebook.com/v19.0/' + fbPageId.value + '/feed', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message, access_token: fbToken.value })
+            });
+            result = await res.json();
+          }
+
+          if (result.error) return json({ error: 'Facebook error: ' + result.error.message }, 400);
+
+          // Log the post
+          await env.DB.prepare('INSERT INTO activity_log (user_id, type, note, details, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .bind(0, 'system', 'Facebook post published', JSON.stringify({ post_id: result.id || result.post_id, message: message.slice(0, 100) }), session.user_id, now()).run();
+
+          await writeAuditLog(env.DB, session.user_id, 'social_post_facebook', { post_id: result.id || result.post_id });
+          return json({ success: true, post_id: result.id || result.post_id });
+        } catch (err) {
+          return json({ error: 'Failed to post: ' + err.message }, 500);
+        }
+      }
+
+      // Post to Instagram
+      if (path === '/api/admin/social/instagram' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const data = await parseBody(request);
+        const { caption, photo_url } = data;
+        if (!caption || !photo_url) return json({ error: 'Caption and photo_url are required for Instagram' }, 400);
+
+        const igUserId = await env.DB.prepare("SELECT value FROM config WHERE key = 'ig_user_id'").first();
+        const fbToken = await env.DB.prepare("SELECT value FROM config WHERE key = 'fb_page_token'").first();
+        if (!igUserId || !fbToken) return json({ error: 'Instagram not configured. Go to Settings and add ig_user_id.' }, 400);
+
+        try {
+          // Step 1: Create media container
+          const createRes = await fetch('https://graph.facebook.com/v19.0/' + igUserId.value + '/media', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_url: photo_url, caption, access_token: fbToken.value })
+          });
+          const container = await createRes.json();
+          if (container.error) return json({ error: 'Instagram error: ' + container.error.message }, 400);
+
+          // Step 2: Publish
+          const pubRes = await fetch('https://graph.facebook.com/v19.0/' + igUserId.value + '/media_publish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ creation_id: container.id, access_token: fbToken.value })
+          });
+          const result = await pubRes.json();
+          if (result.error) return json({ error: 'Instagram publish error: ' + result.error.message }, 400);
+
+          await env.DB.prepare('INSERT INTO activity_log (user_id, type, note, details, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .bind(0, 'system', 'Instagram post published', JSON.stringify({ post_id: result.id, caption: caption.slice(0, 100) }), session.user_id, now()).run();
+
+          await writeAuditLog(env.DB, session.user_id, 'social_post_instagram', { post_id: result.id });
+          return json({ success: true, post_id: result.id });
+        } catch (err) {
+          return json({ error: 'Failed to post: ' + err.message }, 500);
+        }
+      }
+
+      // Get social media post history
+      if (path === '/api/admin/social/history' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const posts = await env.DB.prepare("SELECT * FROM activity_log WHERE type = 'system' AND (note LIKE '%Facebook%' OR note LIKE '%Instagram%') ORDER BY created_at DESC LIMIT 50").all();
+        return json({ posts: posts.results });
+      }
+
+      // =====================
       // ADMIN HTML SERVING
       // =====================
 
@@ -2225,8 +2324,8 @@ async function renderApp() {
   );
   app.appendChild(header);
 
-  const tabs = ['todo','dashboard','leads','applications','kittens','cats','settings','emails','users','audit'];
-  const tabLabels = { todo:'To Do', dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log' };
+  const tabs = ['todo','dashboard','leads','applications','kittens','cats','social','settings','emails','users','audit'];
+  const tabLabels = { todo:'To Do', dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', social:'Social', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log' };
 
   const nav = el('nav', { class: 'container tabs' });
   tabs.forEach(t => {
@@ -2243,6 +2342,7 @@ async function renderApp() {
   else if (currentTab === 'applications') await renderApplications(content);
   else if (currentTab === 'kittens') await renderKittens(content);
   else if (currentTab === 'cats') await renderCats(content);
+  else if (currentTab === 'social') await renderSocial(content);
   else if (currentTab === 'settings') await renderSettings(content);
   else if (currentTab === 'emails') await renderEmails(content);
   else if (currentTab === 'users') await renderUsers(content);
@@ -3463,6 +3563,211 @@ async function showCatModal(cat) {
 }
 
 // ---- Settings ----
+
+// ---- Social Media ----
+
+async function renderSocial(container) {
+  const panel = el('div', { class: 'panel active' });
+  // Fetch social config
+  const fbPageIdRow = await api('/admin/settings').then(r => (r.settings || []).find(s => s.key === 'fb_page_id'));
+  const fbTokenRow = await api('/admin/settings').then(r => (r.settings || []).find(s => s.key === 'fb_page_token'));
+  const igUserIdRow = await api('/admin/settings').then(r => (r.settings || []).find(s => s.key === 'ig_user_id'));
+  const isConfigured = fbPageIdRow && fbPageIdRow.value && fbTokenRow && fbTokenRow.value;
+
+  let html = '<h2 style="margin:20px 0 4px">Social Media</h2>';
+  html += '<p style="color:#6B5B4B;margin-bottom:20px;font-size:.88rem">Post to Facebook and Instagram directly from here.</p>';
+
+  // Configuration section
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:16px 20px;border-radius:12px;border:1px solid rgba(212,197,169,.3);margin-bottom:20px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="document.getElementById(\'socialConfig\').style.display=document.getElementById(\'socialConfig\').style.display===\'none\'?\'block\':\'none\'">';
+  html += '<strong style="font-size:.9rem;color:#A0522D">Account Settings</strong>';
+  html += '<span style="font-size:.82rem;color:' + (isConfigured ? '#7A8B6F' : '#8B3A3A') + '">' + (isConfigured ? '&#10003; Connected' : '&#9888; Not configured') + '</span>';
+  html += '</div>';
+  html += '<div id="socialConfig" style="display:' + (isConfigured ? 'none' : 'block') + ';margin-top:12px">';
+  html += '<div class="form-grid">';
+  html += '<div class="field"><label>Facebook Page ID</label><input type="text" id="cfgFbPageId" value="' + esc(fbPageIdRow ? fbPageIdRow.value : '') + '" placeholder="e.g. 123456789012345"></div>';
+  html += '<div class="field"><label>Instagram User ID</label><input type="text" id="cfgIgUserId" value="' + esc(igUserIdRow ? igUserIdRow.value : '') + '" placeholder="e.g. 17841400000000"></div>';
+  html += '</div>';
+  html += '<div class="field"><label>Page Access Token</label><input type="password" id="cfgFbToken" value="' + esc(fbTokenRow ? fbTokenRow.value : '') + '" placeholder="Long-lived page access token" style="font-family:monospace;font-size:.82rem"></div>';
+  html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center">';
+  html += '<button class="btn btn-sm btn-primary" id="saveSocialConfig">Save Credentials</button>';
+  html += '<button class="btn btn-sm btn-outline" id="testSocialConfig">Test Connection</button>';
+  html += '<span id="socialConfigStatus" style="font-size:.82rem"></span>';
+  html += '</div>';
+  html += '<div style="margin-top:12px;padding:10px;background:#F5EDE0;border-radius:6px;font-size:.78rem;color:#6B5B4B">';
+  html += '<strong>How to get these:</strong><br>';
+  html += '1. Go to <a href="https://developers.facebook.com" target="_blank" style="color:#A0522D">developers.facebook.com</a> &rarr; Create App (Business type)<br>';
+  html += '2. Add "Facebook Login for Business" product<br>';
+  html += '3. In <a href="https://developers.facebook.com/tools/explorer/" target="_blank" style="color:#A0522D">Graph API Explorer</a>: select your Page, request permissions: <code>pages_manage_posts, pages_read_engagement, instagram_basic, instagram_content_publish</code><br>';
+  html += '4. Generate token &rarr; click "Get Long-Lived Token" &rarr; copy the Page Access Token<br>';
+  html += '5. Your Page ID is in your Facebook Page URL or Page settings<br>';
+  html += '6. For Instagram: account must be Business type, linked to the Facebook Page. Get IG User ID from Graph API: <code>/me/accounts?fields=instagram_business_account</code>';
+  html += '</div></div></div>';
+
+  // Post composer
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">';
+
+  // Content templates
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:20px;border-radius:12px;border:1px solid rgba(212,197,169,.3)">';
+  html += '<h3 style="margin:0 0 12px;font-size:1rem;color:#A0522D">Quick Templates</h3>';
+  html += '<div style="display:flex;flex-direction:column;gap:6px">';
+  html += '<button class="btn btn-outline btn-sm" data-template="breed_education" style="text-align:left">&#128218; Breed Education</button>';
+  html += '<button class="btn btn-outline btn-sm" data-template="new_litter" style="text-align:left">&#128049; New Litter Announcement</button>';
+  html += '<button class="btn btn-outline btn-sm" data-template="kitten_update" style="text-align:left">&#128248; Kitten Growth Update</button>';
+  html += '<button class="btn btn-outline btn-sm" data-template="alumni_story" style="text-align:left">&#128150; Alumni / Happy Home Story</button>';
+  html += '<button class="btn btn-outline btn-sm" data-template="event" style="text-align:left">&#128197; Upcoming Event</button>';
+  html += '<button class="btn btn-outline btn-sm" data-template="tip" style="text-align:left">&#128161; Cat Care Tip</button>';
+  html += '</div></div>';
+
+  // Composer
+  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:20px;border-radius:12px;border:1px solid rgba(212,197,169,.3)">';
+  html += '<h3 style="margin:0 0 12px;font-size:1rem;color:#A0522D">Compose Post</h3>';
+  html += '<textarea id="socialMessage" rows="6" placeholder="Write your post here... Use a template or write from scratch." style="width:100%;padding:10px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem;resize:vertical"></textarea>';
+  html += '<div style="margin-top:8px"><label style="font-size:.82rem;font-weight:600;color:#3E3229;display:block;margin-bottom:4px">Photo URL (optional for FB, required for IG)</label>';
+  html += '<input type="text" id="socialPhoto" placeholder="https://portal.blueskycattery.com/photos/..." style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem"></div>';
+  html += '<div style="font-size:.75rem;color:#6B5B4B;margin-top:4px">Tip: Copy a photo URL from the Cats or Kittens page, or use any public image URL.</div>';
+  html += '<div style="display:flex;gap:8px;margin-top:12px">';
+  html += '<button class="btn btn-primary btn-sm" id="postFacebook" style="flex:1">&#9432; Post to Facebook</button>';
+  html += '<button class="btn btn-sm" id="postInstagram" style="flex:1;background:linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888);color:#fff;border:none">&#9741; Post to Instagram</button>';
+  html += '<button class="btn btn-sm" id="postBoth" style="flex:1;background:#3E3229;color:#fff;border:none">Post to Both</button>';
+  html += '</div>';
+  html += '<div id="socialStatus" style="margin-top:8px;font-size:.82rem;display:none"></div>';
+  html += '</div></div>';
+
+  // Hashtag suggestions
+  html += '<div style="margin-bottom:20px;padding:12px 16px;background:#FDF9F3;border-radius:8px;border:1px solid #D4C5A9">';
+  html += '<strong style="font-size:.82rem;color:#A0522D">Suggested Hashtags</strong> <span style="font-size:.75rem;color:#6B5B4B">(click to add)</span><br>';
+  const hashtags = ['#OrientalShorthair','#OSH','#CatBreeder','#BlueSkyKittens','#MissouriCattery','#CFARegistered','#KittensOfInstagram','#CatLife','#OrientalCat','#SerengentiCat','#CatBreederLife','#NewKittens','#KittenUpdate','#CatLovers','#BlueSkyAlumni'];
+  hashtags.forEach(h => {
+    html += '<span data-hashtag="' + h + '" style="display:inline-block;padding:2px 8px;margin:3px 2px;border-radius:12px;font-size:.75rem;background:#F5EDE0;color:#6B5B4B;cursor:pointer;border:1px solid #D4C5A9">' + h + '</span>';
+  });
+  html += '</div>';
+
+  // Post history
+  const { posts } = await api('/admin/social/history');
+  html += '<h3 style="margin:0 0 8px;font-size:1rem;color:#6B5B4B">Recent Posts</h3>';
+  if (posts && posts.length > 0) {
+    html += '<table><thead><tr><th>Platform</th><th>Content</th><th>When</th></tr></thead><tbody>';
+    posts.forEach(p => {
+      const platform = (p.note || '').includes('Facebook') ? 'Facebook' : 'Instagram';
+      const pColor = platform === 'Facebook' ? '#4267B2' : '#E4405F';
+      let details = '';
+      try { details = JSON.parse(p.details || '{}').message || JSON.parse(p.details || '{}').caption || ''; } catch(e) {}
+      html += '<tr><td><span style="color:' + pColor + ';font-weight:700;font-size:.82rem">' + platform + '</span></td>';
+      html += '<td style="font-size:.82rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(details) + '</td>';
+      html += '<td>' + timeAgo(p.created_at) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  } else {
+    html += '<p style="color:#6B5B4B;font-size:.85rem;padding:12px;text-align:center">No posts yet. Compose your first one above!</p>';
+  }
+
+  // Setup guide
+  html += '<div style="margin-top:24px;padding:16px;background:#F5EDE0;border-radius:8px;font-size:.82rem;color:#6B5B4B">';
+  html += '<strong style="color:#A0522D">Setup Guide</strong> (one-time)<br>';
+  html += '1. Go to <strong>developers.facebook.com</strong> &rarr; Create App &rarr; Business type<br>';
+  html += '2. Add "Facebook Login for Business" and "Pages API" products<br>';
+  html += '3. In Graph API Explorer: select your Page, request <code>pages_manage_posts</code>, <code>pages_read_engagement</code>, <code>instagram_basic</code>, <code>instagram_content_publish</code><br>';
+  html += '4. Generate a long-lived Page Access Token<br>';
+  html += '5. In <strong>Settings</strong> tab here, add: <code>fb_page_id</code>, <code>fb_page_token</code>, <code>ig_user_id</code><br>';
+  html += '6. For Instagram: your IG account must be a Business account linked to the Facebook Page</div>';
+
+  panel.innerHTML = html;
+  container.appendChild(panel);
+
+  // Template click handlers
+  const templates = {
+    breed_education: 'Did you know? Oriental Shorthairs are one of the most vocal and intelligent cat breeds in the world! With over 300 color combinations and personalities as big as their ears, they are truly one-of-a-kind companions.\n\nThey bond deeply with their families, follow you room to room, and will absolutely tell you about their day. If you want a cat that acts more like a dog (but with way more attitude), the Oriental Shorthair is your match.\n\n#OrientalShorthair #CatBreeder #BlueSkyKittens #CFARegistered',
+    new_litter: 'We are thrilled to announce a new litter has arrived at Blue Sky Cattery! Our beautiful kittens are growing fast and will be ready for their forever homes soon.\n\nInterested in adding an Oriental Shorthair to your family? Visit blueskycattery.com to learn more and join our waitlist.\n\n#NewKittens #OrientalShorthair #BlueSkyKittens #MissouriCattery #KittensOfInstagram',
+    kitten_update: 'Kitten update from Blue Sky Cattery! Our babies are getting bigger every day and their personalities are really starting to shine. Some are little adventurers, some are champion cuddlers, and a couple are already practicing their opinions (loudly).\n\nStay tuned for individual updates as they grow!\n\n#KittenUpdate #OrientalShorthair #BlueSkyKittens #CatLife',
+    alumni_story: 'Happy home update from one of our Blue Sky alumni! There is nothing better than hearing from our kitten families and seeing how well they are doing in their forever homes.\n\nThis is why we do what we do. Every kitten deserves a family that loves them as much as we do.\n\n#BlueSkyAlumni #OrientalShorthair #HappyHome #CatLovers',
+    event: 'Mark your calendars! Blue Sky Cattery will be at [EVENT NAME] on [DATE]. Come say hello, meet some beautiful Oriental Shorthairs, and learn about this amazing breed.\n\nWe love meeting fellow cat enthusiasts!\n\n#CatShow #OrientalShorthair #BlueSkyKittens #CFARegistered',
+    tip: 'Cat Care Tip from Blue Sky Cattery:\n\nOrental Shorthairs are social cats that do best with a companion. If you work long hours, consider adopting a pair or adding to your existing fur family. A bored Oriental can get creative and that usually means something you own is getting redecorated.\n\nHappy cats = happy homes!\n\n#CatCareTips #OrientalShorthair #CatLife #BlueSkyKittens'
+  };
+
+  panel.querySelectorAll('[data-template]').forEach(btn => {
+    btn.onclick = () => {
+      document.getElementById('socialMessage').value = templates[btn.getAttribute('data-template')] || '';
+      document.getElementById('socialMessage').focus();
+    };
+  });
+
+  // Hashtag click handlers
+  panel.querySelectorAll('[data-hashtag]').forEach(tag => {
+    tag.onclick = () => {
+      const msg = document.getElementById('socialMessage');
+      msg.value = (msg.value + ' ' + tag.getAttribute('data-hashtag')).trim();
+    };
+  });
+
+  // Post handlers
+  async function postToFacebook() {
+    const message = document.getElementById('socialMessage').value.trim();
+    const photo_url = document.getElementById('socialPhoto').value.trim();
+    if (!message) { alert('Write a message first!'); return; }
+    const status = document.getElementById('socialStatus');
+    status.style.display = 'block'; status.style.color = '#6B5B4B'; status.textContent = 'Posting to Facebook...';
+    const res = await api('/admin/social/facebook', { method: 'POST', body: JSON.stringify({ message, photo_url: photo_url || undefined }) });
+    if (res.success) { status.style.color = '#7A8B6F'; status.textContent = 'Posted to Facebook!'; }
+    else { status.style.color = '#8B3A3A'; status.textContent = 'Facebook error: ' + (res.error || 'Unknown'); }
+    return res.success;
+  }
+
+  async function postToInstagram() {
+    const caption = document.getElementById('socialMessage').value.trim();
+    const photo_url = document.getElementById('socialPhoto').value.trim();
+    if (!caption) { alert('Write a caption first!'); return; }
+    if (!photo_url) { alert('Instagram requires a photo URL.'); return; }
+    const status = document.getElementById('socialStatus');
+    status.style.display = 'block'; status.style.color = '#6B5B4B'; status.textContent = 'Posting to Instagram...';
+    const res = await api('/admin/social/instagram', { method: 'POST', body: JSON.stringify({ caption, photo_url }) });
+    if (res.success) { status.style.color = '#7A8B6F'; status.textContent = 'Posted to Instagram!'; }
+    else { status.style.color = '#8B3A3A'; status.textContent = 'Instagram error: ' + (res.error || 'Unknown'); }
+    return res.success;
+  }
+
+  // Save social config
+  document.getElementById('saveSocialConfig').onclick = async () => {
+    const settings = {
+      fb_page_id: document.getElementById('cfgFbPageId').value.trim(),
+      fb_page_token: document.getElementById('cfgFbToken').value.trim(),
+      ig_user_id: document.getElementById('cfgIgUserId').value.trim()
+    };
+    const btn = document.getElementById('saveSocialConfig');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    await api('/admin/settings', { method: 'PUT', body: JSON.stringify({ settings }) });
+    document.getElementById('socialConfigStatus').innerHTML = '<span style="color:#7A8B6F">&#10003; Saved!</span>';
+    btn.disabled = false; btn.textContent = 'Save Credentials';
+  };
+
+  // Test connection
+  document.getElementById('testSocialConfig').onclick = async () => {
+    const token = document.getElementById('cfgFbToken').value.trim();
+    const pageId = document.getElementById('cfgFbPageId').value.trim();
+    const status = document.getElementById('socialConfigStatus');
+    if (!token || !pageId) { status.innerHTML = '<span style="color:#8B3A3A">Enter Page ID and Token first</span>'; return; }
+    status.innerHTML = '<span style="color:#6B5B4B">Testing...</span>';
+    try {
+      const res = await fetch('https://graph.facebook.com/v19.0/' + pageId + '?fields=name,fan_count&access_token=' + token);
+      const data = await res.json();
+      if (data.error) { status.innerHTML = '<span style="color:#8B3A3A">&#10005; ' + data.error.message + '</span>'; }
+      else { status.innerHTML = '<span style="color:#7A8B6F">&#10003; Connected to: ' + (data.name || pageId) + '</span>'; }
+    } catch(e) { status.innerHTML = '<span style="color:#8B3A3A">&#10005; Connection failed</span>'; }
+  };
+
+  document.getElementById('postFacebook').onclick = postToFacebook;
+  document.getElementById('postInstagram').onclick = postToInstagram;
+  document.getElementById('postBoth').onclick = async () => {
+    const status = document.getElementById('socialStatus');
+    status.style.display = 'block'; status.style.color = '#6B5B4B'; status.textContent = 'Posting to both platforms...';
+    const fbOk = await postToFacebook();
+    if (fbOk) {
+      status.textContent = 'Facebook done. Posting to Instagram...';
+      await postToInstagram();
+      status.textContent = 'Posted to both platforms!'; status.style.color = '#7A8B6F';
+    }
+  };
+}
 
 async function renderSettings(container) {
   const { settings } = await api('/admin/settings');
