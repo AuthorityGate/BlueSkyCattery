@@ -1,1 +1,1 @@
-{"main_module":"email-worker.js","compatibility_date":"2024-01-01","compatibility_flags":["nodejs_compat"]}
+{"main_module":"email-worker.js","bindings":[{"type":"send_email","name":"EMAIL"}],"compatibility_date":"2024-01-01","compatibility_flags":["nodejs_compat"]}
