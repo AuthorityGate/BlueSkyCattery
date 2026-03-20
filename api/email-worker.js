@@ -6,17 +6,38 @@
 
 export default {
   async email(message, env, ctx) {
+    try {
     const from = message.from;
     const subject = message.headers.get('subject') || '';
 
-    // Read raw email stream
+    // Read raw email stream using ReadableStream reader
     let rawText = '';
     try {
-      const resp = new Response(message.raw);
-      const buffer = await resp.arrayBuffer();
-      rawText = new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(buffer));
+      const reader = message.raw.getReader();
+      const chunks = [];
+      let totalSize = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        totalSize += value.length;
+        if (totalSize > 20 * 1024 * 1024) break; // 20MB safety limit
+      }
+      const allBytes = new Uint8Array(totalSize);
+      let offset = 0;
+      for (const chunk of chunks) {
+        allBytes.set(chunk, offset);
+        offset += chunk.length;
+      }
+      rawText = new TextDecoder('utf-8', { fatal: false }).decode(allBytes);
     } catch(e) {
-      return;
+      // Last resort: try Response approach
+      try {
+        const resp = new Response(message.raw);
+        rawText = await resp.text();
+      } catch(e2) {
+        return;
+      }
     }
 
     // Parse MIME for text and image attachments
@@ -38,6 +59,15 @@ export default {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+
+    } catch(topError) {
+      // Emergency: if everything fails, at least log it via webhook
+      await fetch('https://portal.blueskycattery.com/api/webhook/inbound-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ From: { Address: message.from || 'unknown' }, Subject: 'EMAIL WORKER ERROR: ' + (topError.message || topError), RawTextBody: 'The email worker crashed processing this email.', Attachments: [] }] })
+      }).catch(() => {});
+    }
   }
 };
 
