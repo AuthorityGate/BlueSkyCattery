@@ -1,7 +1,6 @@
 // ============================================
 // Blue Sky Cattery - Email Worker
-// Parses kittens@ emails for photo attachments
-// Gmail forwarding handled by email routing rule
+// Routes kittens@blueskycattery.com emails
 // ============================================
 
 export default {
@@ -9,40 +8,39 @@ export default {
     const from = message.from;
     const subject = message.headers.get('subject') || '';
 
-    // Read the raw email stream
-    let rawText = '';
+    // IMPORTANT: Forward FIRST before consuming the raw stream
+    // message.forward() needs the stream intact
     try {
-      const reader = message.raw.getReader();
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const total = chunks.reduce((a, c) => a + c.length, 0);
-      const allBytes = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) { allBytes.set(chunk, offset); offset += chunk.length; }
-      rawText = new TextDecoder('utf-8', { fatal: false }).decode(allBytes);
+      await message.forward('kkomlosy@gmail.com');
     } catch(e) {
-      return; // Can't read email, nothing to do
+      // Forward failed - log but continue
     }
 
-    // Parse MIME
-    const textBody = extractPlainText(rawText);
-    const attachments = extractImageAttachments(rawText);
+    // Now try to read raw for photo parsing
+    // After forward, the stream may be consumed - wrap in try/catch
+    let rawText = '';
+    let parsed = false;
+    try {
+      const resp = new Response(message.raw);
+      const buffer = await resp.arrayBuffer();
+      rawText = new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(buffer));
+      parsed = true;
+    } catch(e) {
+      // Stream was consumed by forward - that's ok
+      // Still send a basic webhook with just the subject/from (no attachments)
+    }
 
-    // POST to portal webhook for photo processing + CRM tracking
+    // Build webhook payload
     const payload = {
       items: [{
         From: { Address: from },
         Subject: subject,
-        RawTextBody: textBody,
-        Attachments: attachments
+        RawTextBody: parsed ? extractPlainText(rawText) : '',
+        Attachments: parsed ? extractImageAttachments(rawText) : []
       }]
     };
 
-    // Use waitUntil so the email handler doesn't timeout
+    // POST to portal webhook
     ctx.waitUntil(
       fetch('https://portal.blueskycattery.com/api/webhook/inbound-email', {
         method: 'POST',
@@ -79,15 +77,10 @@ function extractPlainText(raw) {
 
 function extractImageAttachments(raw) {
   const attachments = [];
-  const boundary = findBoundary(raw);
-  if (!boundary) return attachments;
-
-  // Also check for nested multipart boundaries
-  const allBoundaries = [boundary];
-  const nestedMatches = raw.matchAll(/Content-Type:\s*multipart\/[^;]+;\s*boundary=["']?([^"'\r\n;]+)/gi);
-  for (const m of nestedMatches) {
-    if (m[1].trim() !== boundary) allBoundaries.push(m[1].trim());
-  }
+  const allBoundaries = [];
+  const matches = raw.matchAll(/Content-Type:\s*multipart\/[^;]+;\s*boundary=["']?([^"'\r\n;]+)/gi);
+  for (const m of matches) allBoundaries.push(m[1].trim());
+  if (allBoundaries.length === 0) return attachments;
 
   for (const b of allBoundaries) {
     const parts = raw.split('--' + b);
