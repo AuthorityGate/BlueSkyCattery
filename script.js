@@ -147,6 +147,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     var card = cards[i];
                     if (!card) return;
                     card.style.cursor = 'pointer';
+                    // Grab the card's existing photo as fallback
+                    var cardImg = card.querySelector('img');
+                    var cardPhotoUrl = cardImg ? cardImg.src : '';
+                    if (!k.photo_url && cardPhotoUrl) k._cardPhoto = cardPhotoUrl;
                     card.onclick = function(e) { if (!e.target.closest('.btn-reserve')) showKittenProfile(k, data.litter_code); };
 
                     // Update status badge
@@ -370,7 +374,7 @@ function showKittenProfile(kitten, litterCode) {
 
     var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
-    html += '<div class="profile-hero"><img src="' + (kitten.photo_url || 'Images/PXL_20260317_165644165.PORTRAIT.jpg') + '" alt="' + (kitten.name || 'Kitten') + '"></div>';
+    html += '<div class="profile-hero"><img src="' + (kitten.photo_url || kitten._cardPhoto || 'Images/PXL_20260317_165644165.PORTRAIT.jpg') + '" alt="' + (kitten.name || 'Kitten') + '"></div>';
     html += '<div class="profile-title">';
     html += '<div style="display:flex;gap:8px;margin-bottom:8px">';
     html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + sexColor + ';color:#fff">' + sexIcon + ' ' + sexLabel + '</span>';
