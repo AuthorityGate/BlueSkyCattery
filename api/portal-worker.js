@@ -727,20 +727,37 @@ export default {
         return json({ success: true, message: needsVerification ? 'Reservation saved! Check your email to verify and access the portal.' : 'Reservation saved', token: accountToken, needsVerification });
       }
 
-      // Public kitten availability for website
+      // Public kitten availability for website (supports multiple active litters)
       if (path === '/api/kittens/status' && method === 'GET') {
-        const litter = await env.DB.prepare("SELECT * FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
-        if (!litter) return json({ kittens: [] });
-        const kittens = await env.DB.prepare('SELECT number, name, color, sex, status, reserved_by FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
-        return json({ litter_code: litter.litter_code, kittens: kittens.results });
+        const [littersR, kittensR] = await env.DB.batch([
+          env.DB.prepare("SELECT * FROM litters WHERE status = 'active' ORDER BY born_date DESC, id DESC"),
+          env.DB.prepare("SELECT k.*, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE l.status = 'active' ORDER BY l.id DESC, k.number ASC"),
+        ]);
+        const allLitters = littersR.results || [];
+        const allKittens = kittensR.results || [];
+        // Group kittens by litter
+        const kittensByLitter = {};
+        allKittens.forEach(k => { if (!kittensByLitter[k.litter_id]) kittensByLitter[k.litter_id] = []; kittensByLitter[k.litter_id].push(k); });
+        const litters = allLitters.map(l => ({ ...l, kittens: kittensByLitter[l.id] || [] }));
+        // Backward compatible: also return the most recent litter's kittens at top level
+        const primary = litters[0];
+        return json({ litter_code: primary ? primary.litter_code : null, kittens: primary ? primary.kittens : [], litters });
       }
 
-      // Public litter info for website
+      // Public litter info for website (supports multiple active litters)
       if (path === '/api/litter' && method === 'GET') {
-        const litter = await env.DB.prepare("SELECT * FROM litters WHERE status = 'active' ORDER BY id DESC LIMIT 1").first();
-        if (!litter) return json({ litter: null });
-        const kittens = await env.DB.prepare('SELECT number, name, color, sex, status, photo_url FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
-        return json({ litter: { ...litter, kittens: kittens.results } });
+        const [littersR, kittensR] = await env.DB.batch([
+          env.DB.prepare("SELECT * FROM litters WHERE status IN ('active','planned','completed') ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'planned' THEN 1 WHEN 'completed' THEN 2 END, born_date DESC, id DESC"),
+          env.DB.prepare("SELECT number, name, color, sex, status, photo_url, litter_id FROM kittens ORDER BY litter_id, number ASC"),
+        ]);
+        const allLitters = littersR.results || [];
+        const allKittens = kittensR.results || [];
+        const kittensByLitter = {};
+        allKittens.forEach(k => { if (!kittensByLitter[k.litter_id]) kittensByLitter[k.litter_id] = []; kittensByLitter[k.litter_id].push(k); });
+        const litters = allLitters.map(l => ({ ...l, kittens: kittensByLitter[l.id] || [] }));
+        // Backward compatible: primary litter
+        const primary = litters.find(l => l.status === 'active') || litters[0];
+        return json({ litter: primary || null, litters });
       }
 
       // Public: application questions (for dynamic form rendering)
@@ -1625,6 +1642,7 @@ async function renderPortal() {
   const [appRes, litterRes, profileRes] = await Promise.all([api('/application'), api('/litter'), api('/profile')]);
   const existing = appRes.application;
   const litter = litterRes.litter;
+  const allLitters = litterRes.litters || (litter ? [litter] : []);
   const profile = profileRes.profile || {};
 
   let appContent = '';
@@ -1640,26 +1658,29 @@ async function renderPortal() {
     appContent = await renderApplicationForm();
   }
 
-  // Current litter info
+  // Litter info (supports multiple)
   let litterContent = '';
-  if (litter) {
-    const kittens = litter.kittens || [];
-    const statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
+  const statusLabels = { active: 'Current Litter', planned: 'Upcoming', completed: 'Past Litter' };
+  const statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
+  allLitters.filter(l => l.status === 'active').forEach(lit => {
+    const kittens = lit.kittens || [];
     let kittenRows = '';
     kittens.forEach(k => {
       const color = statusColors[k.status] || '#6B5B4B';
       const sexIcon = k.sex === 'male' ? '&#9794;' : k.sex === 'female' ? '&#9792;' : '?';
       kittenRows += '<tr><td><strong>' + (k.name || 'Kitten #' + k.number) + '</strong></td><td>' + sexIcon + ' ' + (k.sex || 'TBD') + '</td><td>' + (k.color || 'Developing') + '</td><td><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;color:#fff;background:' + color + ';text-transform:uppercase">' + k.status + '</span></td></tr>';
     });
-    litterContent = \`<div class="card" style="margin-top:20px">
-      <h2 style="margin-bottom:4px">Current Litter: \${litter.litter_code || ''}</h2>
-      <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:16px">\${litter.sire_name || ''} x \${litter.dam_name || ''} &mdash; Born: \${litter.born_date || 'TBD'} &mdash; Go-Home: \${litter.go_home_date || 'TBD'}</p>
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="border-bottom:2px solid #D4C5A9"><th style="text-align:left;padding:8px;font-size:.85rem">Name</th><th style="text-align:left;padding:8px;font-size:.85rem">Sex</th><th style="text-align:left;padding:8px;font-size:.85rem">Color</th><th style="text-align:left;padding:8px;font-size:.85rem">Status</th></tr></thead>
-        <tbody>\${kittenRows}</tbody>
-      </table>
-    </div>\`;
-  }
+    litterContent += '<div class="card" style="margin-top:20px">' +
+      '<h2 style="margin-bottom:4px">' + (statusLabels[lit.status] || 'Litter') + ': ' + (lit.litter_code || '') + '</h2>' +
+      '<p style="font-size:.85rem;color:#6B5B4B;margin-bottom:16px">' + (lit.sire_name || '') + ' x ' + (lit.dam_name || '') + ' &mdash; Born: ' + (lit.born_date || 'TBD') + ' &mdash; Go-Home: ' + (lit.go_home_date || 'TBD') + '</p>' +
+      '<table style="width:100%;border-collapse:collapse"><thead><tr style="border-bottom:2px solid #D4C5A9"><th style="text-align:left;padding:8px;font-size:.85rem">Name</th><th style="text-align:left;padding:8px;font-size:.85rem">Sex</th><th style="text-align:left;padding:8px;font-size:.85rem">Color</th><th style="text-align:left;padding:8px;font-size:.85rem">Status</th></tr></thead>' +
+      '<tbody>' + kittenRows + '</tbody></table></div>';
+  });
+  // Show planned litters as teasers
+  allLitters.filter(l => l.status === 'planned').forEach(lit => {
+    litterContent += '<div class="card" style="margin-top:20px;opacity:.8"><h2 style="margin-bottom:4px">Upcoming: ' + (lit.litter_code || '') + '</h2>' +
+      '<p style="font-size:.85rem;color:#6B5B4B">' + (lit.sire_name || '') + ' x ' + (lit.dam_name || '') + ' &mdash; Expected: ' + (lit.born_date || 'TBD') + '</p></div>';
+  });
 
   // Subscription preferences
   const subsContent = \`<div class="card" style="margin-top:20px">
