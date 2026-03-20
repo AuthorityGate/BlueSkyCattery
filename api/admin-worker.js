@@ -506,7 +506,7 @@ async function writeAuditLog(db, userId, action, details) {
 let _schemaReady = false;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     _brevoKey = env.BREVO_API_KEY || null;
 
     if (!_schemaReady) {
@@ -888,16 +888,20 @@ export default {
       // ADMIN: LITTERS & KITTENS
       // =====================
 
-      // Get litters with kittens
+      // Get litters with kittens (single query for all kittens, grouped in JS)
       if (path === '/api/admin/litters' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const litters = await env.DB.prepare('SELECT * FROM litters ORDER BY year DESC, dam_name ASC').all();
-        const result = [];
-        for (const litter of litters.results) {
-          const kittens = await env.DB.prepare('SELECT * FROM kittens WHERE litter_id = ? ORDER BY number ASC').bind(litter.id).all();
-          result.push({ ...litter, kittens: kittens.results });
-        }
+        const [littersR, kittensR] = await env.DB.batch([
+          env.DB.prepare('SELECT * FROM litters ORDER BY year DESC, dam_name ASC'),
+          env.DB.prepare('SELECT * FROM kittens ORDER BY litter_id, number ASC'),
+        ]);
+        const kittensByLitter = {};
+        (kittensR.results || []).forEach(k => {
+          if (!kittensByLitter[k.litter_id]) kittensByLitter[k.litter_id] = [];
+          kittensByLitter[k.litter_id].push(k);
+        });
+        const result = (littersR.results || []).map(l => ({ ...l, kittens: kittensByLitter[l.id] || [] }));
         return json({ litters: result });
       }
 
@@ -954,46 +958,46 @@ export default {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
 
-        const totalLeads = await env.DB.prepare('SELECT COUNT(*) as count FROM leads').first();
-        const newLeads = await env.DB.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'new'").first();
-        const totalApps = await env.DB.prepare('SELECT COUNT(*) as count FROM applications').first();
-        const pendingApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'submitted'").first();
-        const avgScore = await env.DB.prepare('SELECT AVG(score) as avg FROM applications').first();
-        const availableKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'available'").first();
-        const reservedKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'reserved' OR status = 'pending'").first();
-        const soldKittens = await env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'sold'").first();
-
-        // Funnel data
-        const approvedLeads = await env.DB.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'approved'").first();
-        const rejectedApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'rejected'").first();
-        const approvedApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'approved'").first();
-        const waitlistApps = await env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'waitlist'").first();
-
-        // Score distribution
-        const scoreRanges = await env.DB.prepare(`
-          SELECT
-            SUM(CASE WHEN score >= 80 THEN 1 ELSE 0 END) as excellent,
-            SUM(CASE WHEN score >= 65 AND score < 80 THEN 1 ELSE 0 END) as good,
-            SUM(CASE WHEN score >= 45 AND score < 65 THEN 1 ELSE 0 END) as fair,
-            SUM(CASE WHEN score < 45 THEN 1 ELSE 0 END) as needs_review
-          FROM applications
-        `).first();
-
-        // Lead sources
-        const sources = await env.DB.prepare(`
-          SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC
-        `).all();
-
-        // Purpose breakdown
-        const purposes = await env.DB.prepare(`
-          SELECT purpose, COUNT(*) as count FROM applications WHERE purpose IS NOT NULL GROUP BY purpose ORDER BY count DESC
-        `).all();
-
-        // Recent activity (last 10 leads and apps)
-        const recentLeads = await env.DB.prepare('SELECT id, name, email, source, status, created_at FROM leads ORDER BY created_at DESC LIMIT 10').all();
-        const recentApps = await env.DB.prepare('SELECT id, full_name, email, score, status, purpose, created_at FROM applications ORDER BY created_at DESC LIMIT 10').all();
-
-        // Email stats
+        // Batch all stats queries into a single D1 round-trip
+        let batchResults;
+        try {
+          batchResults = await env.DB.batch([
+            env.DB.prepare('SELECT COUNT(*) as count FROM leads'),
+            env.DB.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'new'"),
+            env.DB.prepare('SELECT COUNT(*) as count FROM applications'),
+            env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'submitted'"),
+            env.DB.prepare('SELECT AVG(score) as avg FROM applications'),
+            env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'available'"),
+            env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'reserved' OR status = 'pending'"),
+            env.DB.prepare("SELECT COUNT(*) as count FROM kittens WHERE status = 'sold'"),
+            env.DB.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'approved'"),
+            env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'rejected'"),
+            env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'approved'"),
+            env.DB.prepare("SELECT COUNT(*) as count FROM applications WHERE status = 'waitlist'"),
+            env.DB.prepare("SELECT SUM(CASE WHEN score >= 80 THEN 1 ELSE 0 END) as excellent, SUM(CASE WHEN score >= 65 AND score < 80 THEN 1 ELSE 0 END) as good, SUM(CASE WHEN score >= 45 AND score < 65 THEN 1 ELSE 0 END) as fair, SUM(CASE WHEN score < 45 THEN 1 ELSE 0 END) as needs_review FROM applications"),
+            env.DB.prepare('SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC'),
+            env.DB.prepare('SELECT purpose, COUNT(*) as count FROM applications WHERE purpose IS NOT NULL GROUP BY purpose ORDER BY count DESC'),
+            env.DB.prepare('SELECT id, name, email, source, status, created_at FROM leads ORDER BY created_at DESC LIMIT 10'),
+            env.DB.prepare('SELECT id, full_name, email, score, status, purpose, created_at FROM applications ORDER BY created_at DESC LIMIT 10'),
+          ]);
+        } catch(e) { return json({ error: 'Stats query failed' }, 500); }
+        const totalLeads = batchResults[0].results[0];
+        const newLeads = batchResults[1].results[0];
+        const totalApps = batchResults[2].results[0];
+        const pendingApps = batchResults[3].results[0];
+        const avgScore = batchResults[4].results[0];
+        const availableKittens = batchResults[5].results[0];
+        const reservedKittens = batchResults[6].results[0];
+        const soldKittens = batchResults[7].results[0];
+        const approvedLeads = batchResults[8].results[0];
+        const rejectedApps = batchResults[9].results[0];
+        const approvedApps = batchResults[10].results[0];
+        const waitlistApps = batchResults[11].results[0];
+        const scoreRanges = batchResults[12].results[0];
+        const sources = batchResults[13];
+        const purposes = batchResults[14];
+        const recentLeads = batchResults[15];
+        const recentApps = batchResults[16];
         let emailsSent = { count: 0 };
         try { emailsSent = await env.DB.prepare('SELECT COUNT(*) as count FROM email_sent_log').first(); } catch(e) {}
 
@@ -2128,6 +2132,7 @@ nav.tabs button{padding:8px 10px;font-size:.72rem;white-space:nowrap;flex-shrink
 const API = window.location.origin + '/api';
 let authToken = localStorage.getItem('bsc_admin_token');
 let currentTab = 'todo';
+let _cachedMe = null; // Cache auth/me for session
 
 // Client-side image resizer - optimizes photos before upload
 function resizeImage(file, maxWidth, quality) {
@@ -2323,11 +2328,11 @@ function renderResetPassword(token) {
 // ---- Main App Shell ----
 
 async function renderApp() {
-  const [me, notif] = await Promise.all([
-    api('/auth/me'),
-    api('/admin/notifications').catch(() => ({ total: 0 }))
-  ]);
-  if (!me.user || me.user.role !== 'admin') { authToken = null; localStorage.removeItem('bsc_admin_token'); return renderLogin(); }
+  // Use cached auth or fetch fresh
+  if (!_cachedMe) _cachedMe = await api('/auth/me');
+  const me = _cachedMe;
+  if (!me.user || me.user.role !== 'admin') { _cachedMe = null; authToken = null; localStorage.removeItem('bsc_admin_token'); return renderLogin(); }
+  const notif = await api('/admin/notifications').catch(() => ({ total: 0 }));
 
   const app = document.getElementById('app');
   app.innerHTML = '';
@@ -2344,7 +2349,7 @@ async function renderApp() {
       ),
       el('div', { style: 'display:flex;gap:8px;align-items:center' },
         el('a', { href: 'https://blueskycattery.com', style: 'color:#C8B88A;font-size:.8rem;text-decoration:none', html: 'View Site &rarr;' }),
-        el('button', { class: 'btn btn-outline', style: 'color:#fff;border-color:rgba(255,255,255,.3)', onclick: async () => { await api('/auth/logout', { method:'POST' }); authToken = null; localStorage.removeItem('bsc_admin_token'); renderLogin(); }}, 'Logout')
+        el('button', { class: 'btn btn-outline', style: 'color:#fff;border-color:rgba(255,255,255,.3)', onclick: async () => { await api('/auth/logout', { method:'POST' }); _cachedMe = null; authToken = null; localStorage.removeItem('bsc_admin_token'); renderLogin(); }}, 'Logout')
       )
     )
   );
@@ -3396,14 +3401,13 @@ async function showKittenEditModal(kittenId, kitten) {
     const files = e.target.files;
     if (!files.length) return;
     const status = document.getElementById('ekUploadStatus');
-    status.textContent = 'Optimizing & uploading ' + files.length + ' photo(s)...';
-    for (const file of files) {
-      const resized = await resizeImage(file, 1200, 0.8);
-      await api('/admin/photos/upload', { method: 'POST', body: JSON.stringify({
-        entity_type: 'kitten', entity_id: kittenId,
-        photos: [{ filename: file.name, data: resized }]
-      })});
-    }
+    status.textContent = 'Optimizing ' + files.length + ' photo(s)...';
+    const resizedAll = await Promise.all([...files].map(f => resizeImage(f, 1200, 0.8)));
+    status.textContent = 'Uploading...';
+    await api('/admin/photos/upload', { method: 'POST', body: JSON.stringify({
+      entity_type: 'kitten', entity_id: kittenId,
+      photos: resizedAll.map((d, i) => ({ filename: files[i].name, data: d }))
+    })});
     bg.remove();
     showKittenEditModal(kittenId, kitten); // Refresh
   };
@@ -3586,14 +3590,13 @@ async function showCatModal(cat) {
       uploadEl.onchange = async (e) => {
         const files = e.target.files;
         if (!files.length) return;
-        document.getElementById('catUploadStatus').textContent = 'Optimizing & uploading ' + files.length + ' photo(s)...';
-        for (const file of files) {
-          const resized = await resizeImage(file, 1200, 0.8);
-          await api('/admin/photos/upload', { method: 'POST', body: JSON.stringify({
-            entity_type: 'cat', entity_id: cat.id,
-            photos: [{ filename: file.name, data: resized }]
-          })});
-        }
+        document.getElementById('catUploadStatus').textContent = 'Optimizing ' + files.length + ' photo(s)...';
+        const resizedAll = await Promise.all([...files].map(f => resizeImage(f, 1200, 0.8)));
+        document.getElementById('catUploadStatus').textContent = 'Uploading...';
+        await api('/admin/photos/upload', { method: 'POST', body: JSON.stringify({
+          entity_type: 'cat', entity_id: cat.id,
+          photos: resizedAll.map((d, i) => ({ filename: files[i].name, data: d }))
+        })});
         bg.remove();
         showCatModal(cat);
       };
