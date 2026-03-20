@@ -861,6 +861,8 @@ export default {
       // Brevo inbound email webhook
       if (path === '/api/webhook/inbound-email' && method === 'POST') {
         const payload = await parseBody(request);
+        // Debug: log the raw webhook call
+        try { await env.DB.prepare("INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (0, 'system', 'WEBHOOK DEBUG', ?, datetime('now'))").bind(JSON.stringify(payload).slice(0, 2000)).run(); } catch(e) {}
         const items = payload.items || [payload];
         for (const item of items) {
           const fromEmail = (item.From || item.from || {}).Address || (item.From || item.from || '');
@@ -900,9 +902,25 @@ export default {
               }
 
               for (const att of imageAttachments) {
-                const filename = att.Name || att.name || 'photo.jpg';
-                const content = att.Content || att.content || '';
-                if (!content) { unmatched.push(filename + ' (no data)'); continue; }
+                const filename = att.Name || att.name || att.Filename || att.filename || 'photo.jpg';
+                let content = att.Content || att.content || att.Base64Content || '';
+
+                // Brevo provides download URLs instead of inline base64
+                if (!content && (att.DownloadUrl || att.downloadUrl || att.Url || att.url || att.DownloadToken)) {
+                  try {
+                    const dlUrl = att.DownloadUrl || att.downloadUrl || att.Url || att.url;
+                    if (dlUrl) {
+                      const dlResp = await fetch(dlUrl);
+                      if (dlResp.ok) {
+                        const dlBuffer = await dlResp.arrayBuffer();
+                        const dlBytes = new Uint8Array(dlBuffer);
+                        content = btoa(String.fromCharCode(...dlBytes));
+                      }
+                    }
+                  } catch(e) {}
+                }
+
+                if (!content) { unmatched.push(filename + ' (no data - keys: ' + Object.keys(att).join(',') + ')'); continue; }
 
                 // Try 1: Match by filename - "Hannah2.jpg" -> "Hannah"
                 const baseName = filename.replace(/\.[^.]+$/, '').replace(/[\d_\-\s]+$/, '').trim();
