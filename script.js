@@ -319,6 +319,7 @@ function showCatProfile(cat) {
     var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
     html += '<div class="profile-hero"><img src="' + (cat.photo_url || '') + '" alt="' + cat.name + '"></div>';
+    html += '<div class="profile-gallery" id="catGallery' + cat.id + '"></div>';
     html += '<div class="profile-title">';
     html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + badgeColor + ';color:#fff;text-transform:uppercase;margin-bottom:8px">' + badgeText + '</span>';
     html += '<h2>' + cat.name + '</h2>';
@@ -332,9 +333,6 @@ function showCatProfile(cat) {
     if (cat.registration) html += '<div class="profile-detail"><span class="detail-label">Registration</span><span>' + cat.registration + '</span></div>';
     if (cat.health_tested) html += '<div class="profile-detail"><span class="detail-label">Health Tested</span><span style="color:#7A8B6F;font-weight:700">Yes &#10003;</span></div>';
     html += '</div>';
-
-    // Photo gallery placeholder
-    html += '<div class="profile-gallery" id="catGallery' + cat.id + '"></div>';
 
     modal.innerHTML = html;
     overlay.appendChild(modal);
@@ -369,6 +367,7 @@ function showKittenProfile(kitten, litterCode) {
     var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
     html += '<div class="profile-hero"><img src="' + (kitten.photo_url || kitten._cardPhoto || 'Images/PXL_20260317_165644165.PORTRAIT.jpg') + '" alt="' + (kitten.name || 'Kitten') + '"></div>';
+    html += '<div class="profile-gallery" id="kittenGallery' + kitten.number + '"></div>';
     html += '<div class="profile-title">';
     html += '<div style="display:flex;gap:8px;margin-bottom:8px">';
     html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + sexColor + ';color:#fff">' + sexIcon + ' ' + sexLabel + '</span>';
@@ -396,8 +395,6 @@ function showKittenProfile(kitten, litterCode) {
             html += '<div style="text-align:center;margin:16px 24px"><button class="btn btn-primary" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\';openReservation(' + kitten.number + ')">Reserve ' + (kitten.name || 'This Kitten') + '</button></div>';
         }
     }
-
-    html += '<div class="profile-gallery" id="kittenGallery' + kitten.number + '"></div>';
 
     modal.innerHTML = html;
     overlay.appendChild(modal);
