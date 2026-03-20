@@ -210,6 +210,23 @@ function openReservation(kittenNum) {
 
     form.style.display = 'block';
     success.style.display = 'none';
+
+    // If user is already logged into the portal, hide account creation
+    var hasPortalToken = localStorage.getItem('bsc_portal_token');
+    var accountSection = document.getElementById('resAccountSection');
+    var loggedInNotice = document.getElementById('resLoggedInNotice');
+    if (hasPortalToken && accountSection && loggedInNotice) {
+        accountSection.style.display = 'none';
+        loggedInNotice.style.display = 'block';
+        // Remove required from password fields
+        var pw = document.getElementById('resPassword');
+        var pwc = document.getElementById('resPasswordConfirm');
+        if (pw) pw.removeAttribute('required');
+        if (pwc) pwc.removeAttribute('required');
+    } else if (accountSection && loggedInNotice) {
+        accountSection.style.display = 'block';
+        loggedInNotice.style.display = 'none';
+    }
     modal.classList.add('modal-active');
     document.body.style.overflow = 'hidden';
 }
@@ -355,14 +372,23 @@ function showKittenProfile(kitten, litterCode) {
     html += '<p class="profile-breed">Oriental Shorthair &mdash; ' + (litterCode || '') + '</p>';
     html += '</div></div>';
 
+    if (kitten.bio) html += '<div class="profile-bio"><p>' + kitten.bio + '</p></div>';
+
     html += '<div class="profile-details">';
-    if (kitten.color && kitten.color !== 'TBD') html += '<div class="profile-detail"><span class="detail-label">Color</span><span>' + kitten.color + '</span></div>';
+    if (kitten.color && kitten.color !== 'TBD' && kitten.color !== 'Color developing') html += '<div class="profile-detail"><span class="detail-label">Color</span><span>' + kitten.color + '</span></div>';
     html += '<div class="profile-detail"><span class="detail-label">Sex</span><span>' + sexLabel + '</span></div>';
     html += '<div class="profile-detail"><span class="detail-label">Status</span><span style="color:' + statusColor + ';font-weight:700">' + (statusLabels[kitten.status] || kitten.status) + '</span></div>';
+    if (kitten.price) html += '<div class="profile-detail"><span class="detail-label">Starting At</span><span>$' + Number(kitten.price).toLocaleString() + '</span></div>';
     html += '</div>';
 
     if (kitten.status === 'available') {
-        html += '<div style="text-align:center;margin-top:16px"><button class="btn btn-primary" onclick="this.closest(\'.profile-overlay\').remove();openReservation(' + kitten.number + ')">Reserve ' + (kitten.name || 'This Kitten') + '</button></div>';
+        // Check if user is already logged into the portal
+        var hasPortalToken = localStorage.getItem('bsc_portal_token');
+        if (hasPortalToken) {
+            html += '<div style="text-align:center;margin:16px 24px"><a href="https://portal.blueskycattery.com" class="btn btn-primary" style="display:inline-block;text-decoration:none">Go to Portal to Complete Application</a></div>';
+        } else {
+            html += '<div style="text-align:center;margin:16px 24px"><button class="btn btn-primary" onclick="this.closest(\'.profile-overlay\').remove();openReservation(' + kitten.number + ')">Reserve ' + (kitten.name || 'This Kitten') + '</button></div>';
+        }
     }
 
     html += '<div class="profile-gallery" id="kittenGallery' + kitten.number + '"></div>';
@@ -441,20 +467,26 @@ function submitReserveForm(e) {
     var data = {};
     fd.forEach(function (v, k) { if (k !== 'password_confirm') data[k] = v; });
 
-    // Validate passwords
-    var pass = fd.get('password');
-    var confirm = fd.get('password_confirm');
-    if (!pass || pass.length < 8) {
-        alert('Password must be at least 8 characters.');
-        return false;
-    }
-    if (pass !== confirm) {
-        alert('Passwords do not match.');
-        return false;
+    // Validate passwords only if account creation section is visible
+    var hasPortalToken = localStorage.getItem('bsc_portal_token');
+    if (!hasPortalToken) {
+        var pass = fd.get('password');
+        var confirmPw = fd.get('password_confirm');
+        if (!pass || pass.length < 8) {
+            alert('Password must be at least 8 characters.');
+            return false;
+        }
+        if (pass !== confirmPw) {
+            alert('Passwords do not match.');
+            return false;
+        }
+    } else {
+        // Logged in - remove password from data
+        delete data.password;
     }
 
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Creating your account...';
+    submitBtn.textContent = hasPortalToken ? 'Submitting...' : 'Creating your account...';
 
     fetch(PORTAL_API + '/reserve', {
         method: 'POST',
@@ -462,7 +494,10 @@ function submitReserveForm(e) {
         body: JSON.stringify(data)
     }).then(function (res) { return res.json(); })
     .then(function (result) {
-        if (result.success && result.token) {
+        if (result.success && hasPortalToken) {
+            // Already logged in - go straight to portal
+            window.location.href = 'https://portal.blueskycattery.com';
+        } else if (result.success && result.token) {
             window.location.href = 'https://portal.blueskycattery.com/?token=' + result.token;
         } else if (result.success && result.needsVerification) {
             // Show verification message instead of redirecting

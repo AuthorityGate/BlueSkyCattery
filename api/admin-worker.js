@@ -531,6 +531,7 @@ export default {
         'ALTER TABLE kittens ADD COLUMN balance_due REAL',
         'ALTER TABLE kittens ADD COLUMN payment_notes TEXT',
         'ALTER TABLE kittens ADD COLUMN go_home_checklist JSON',
+        'ALTER TABLE kittens ADD COLUMN bio TEXT',
         'ALTER TABLE users ADD COLUMN admin_notes TEXT',
         'ALTER TABLE users ADD COLUMN verification JSON',
         'ALTER TABLE users ADD COLUMN reset_token TEXT',
@@ -944,6 +945,7 @@ export default {
         if (data.deposit_method !== undefined) { fields.push('deposit_method = ?'); values.push(data.deposit_method); }
         if (data.balance_due !== undefined) { fields.push('balance_due = ?'); values.push(data.balance_due); }
         if (data.payment_notes !== undefined) { fields.push('payment_notes = ?'); values.push(data.payment_notes); }
+        if (data.bio !== undefined) { fields.push('bio = ?'); values.push(data.bio); }
         fields.push('updated_at = ?'); values.push(now());
         values.push(kittenId);
         await env.DB.prepare('UPDATE kittens SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
@@ -3351,7 +3353,8 @@ async function showKittenEditModal(kittenId, kitten) {
     '</select></div>' +
     '<div class="field"><label>Balance Due ($)</label><input type="number" id="ekBalanceDue" step="0.01" value="' + (kitten.balance_due != null ? kitten.balance_due : '') + '"></div></div>' +
     '<div class="field"><label>Payment Notes</label><textarea id="ekPaymentNotes" rows="2" style="font-size:.85rem">' + esc(kitten.payment_notes || '') + '</textarea></div>' +
-    '<div class="field"><label>Notes</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
+    '<div class="field"><label>Bio (shown on public website)</label><textarea id="ekBio" rows="3" placeholder="Personality, temperament, what makes this kitten special...">' + esc(kitten.bio || '') + '</textarea></div>' +
+    '<div class="field"><label>Admin Notes (private)</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
     ((kitten.status === 'reserved' || kitten.status === 'sold') ? (function() {
       var clItems = [
         { key: 'spayed_neutered', label: 'Spay/neuter confirmed' },
@@ -3473,6 +3476,7 @@ async function showKittenEditModal(kittenId, kitten) {
       deposit_method: document.getElementById('ekDepositMethod').value || null,
       balance_due: document.getElementById('ekBalanceDue').value ? parseFloat(document.getElementById('ekBalanceDue').value) : null,
       payment_notes: document.getElementById('ekPaymentNotes').value || null,
+      bio: document.getElementById('ekBio').value,
       notes: document.getElementById('ekNotes').value
     })});
     bg.remove();

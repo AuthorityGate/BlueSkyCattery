@@ -536,7 +536,7 @@
                     <label for="resNotes">Anything else you'd like us to know?</label>
                     <textarea id="resNotes" name="notes" rows="2"></textarea>
                 </div>
-                <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:2px solid #D4C5A9">
+                <div class="form-group" id="resAccountSection" style="margin-top:16px;padding-top:16px;border-top:2px solid #D4C5A9">
                     <label style="font-size:1rem;font-weight:700;color:#A0522D;margin-bottom:8px;display:block">Create Your Portal Account</label>
                     <p style="font-size:.85rem;color:#6B5B4B;margin-bottom:12px">Create a password to access our Adoption Portal where you can complete the full application, track your reservation, and receive updates.</p>
                     <label for="resPassword">Password (min 8 characters) *</label>
@@ -544,8 +544,12 @@
                     <label for="resPasswordConfirm" style="margin-top:8px">Confirm Password *</label>
                     <input type="password" id="resPasswordConfirm" name="password_confirm" required minlength="8" placeholder="Confirm your password">
                 </div>
+                <div id="resLoggedInNotice" style="display:none;margin-top:16px;padding:16px;background:rgba(122,139,111,.08);border:1px solid rgba(122,139,111,.2);border-radius:8px">
+                    <p style="color:#7A8B6F;font-weight:600;margin-bottom:4px">&#10003; You're already logged into the portal</p>
+                    <p style="font-size:.85rem;color:#6B5B4B">Your reservation will be linked to your existing account. No need to create a new one.</p>
+                </div>
                 <div class="form-notice">
-                    <p><strong>What happens next:</strong> After submitting, you'll be redirected to our Adoption Portal where you can complete the full application. Your reservation details will already be on file. Approved families will be contacted to place a non-refundable $500 deposit.</p>
+                    <p><strong>What happens next:</strong> Your reservation request will be submitted and you can complete the full application in the Adoption Portal. Approved families will be contacted to place a non-refundable $500 deposit.</p>
                 </div>
                 <button type="submit" class="btn btn-primary btn-full">Submit Reservation Request</button>
             </form>
@@ -594,7 +598,7 @@
         </div>
     </footer>
 
-    <script src="script.js?v=11"></script>
+    <script src="script.js?v=12"></script>
 
 </body>
 </html>
