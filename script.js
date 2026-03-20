@@ -134,67 +134,57 @@ document.addEventListener('DOMContentLoaded', function () {
             }).catch(function () {});
     }
 
-    // --- Live kitten status from API ---
+    // --- Build kittens dynamically from API ---
     var kittensGrid = document.getElementById('kittensGrid');
     if (kittensGrid) {
         fetch(API + '/kittens/status')
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                if (!data.kittens || !data.kittens.length) return;
-                _loadedKittens = data.kittens; // Store for reservation modal
-                var cards = kittensGrid.querySelectorAll('.kitten-card');
-                data.kittens.forEach(function (k, i) {
-                    var card = cards[i];
-                    if (!card) return;
+                if (!data.kittens || !data.kittens.length) {
+                    kittensGrid.innerHTML = '<div style="text-align:center;padding:40px;color:#6B5B4B">No kittens available at this time. Join our waitlist to be notified!</div>';
+                    return;
+                }
+                _loadedKittens = data.kittens;
+                kittensGrid.innerHTML = '';
+
+                data.kittens.forEach(function (k) {
+                    var statusLabels = { available: 'Available', pending: 'Pending Deposit', reserved: 'Reserved', sold: 'Sold' };
+                    var statusLabel = statusLabels[k.status] || k.status;
+                    var sexLabel = k.sex === 'male' ? 'Male' : k.sex === 'female' ? 'Female' : 'TBD';
+                    var sexIcon = k.sex === 'male' ? '\u2642' : k.sex === 'female' ? '\u2640' : '\u2754';
+                    var sexColor = k.sex === 'male' ? '#87A5B4' : k.sex === 'female' ? '#D4879B' : '#C8B88A';
+                    var colorText = (k.color && k.color !== 'TBD' && k.color !== 'Color developing') ? k.color : 'Color developing';
+                    var photoSrc = k.photo_url || 'Images/PXL_20260317_165644165.PORTRAIT.jpg';
+                    var name = k.name || 'Kitten #' + k.number;
+
+                    var card = document.createElement('div');
+                    card.className = 'kitten-card animate-target animate-in';
                     card.style.cursor = 'pointer';
-                    // Grab the card's existing photo as fallback
-                    var cardImg = card.querySelector('img');
-                    var cardPhotoUrl = cardImg ? cardImg.src : '';
-                    if (!k.photo_url && cardPhotoUrl) k._cardPhoto = cardPhotoUrl;
+
+                    var btnHtml = '';
+                    if (k.status === 'available') {
+                        btnHtml = '<button class="btn btn-reserve" onclick="event.stopPropagation();openReservation(' + k.number + ')">Reserve ' + name + '</button>';
+                    } else if (k.status === 'sold') {
+                        btnHtml = '<button class="btn btn-reserve" disabled style="opacity:.5;cursor:not-allowed;background:#8B3A3A">Sold</button>';
+                    } else if (k.status === 'reserved') {
+                        btnHtml = '<button class="btn btn-reserve" disabled style="opacity:.5;cursor:not-allowed;background:#D4AF37;color:#3E3229">Reserved</button>';
+                    } else if (k.status === 'pending') {
+                        btnHtml = '<button class="btn btn-reserve" disabled style="opacity:.5;cursor:not-allowed;background:#87A5B4">Reservation Pending</button>';
+                    }
+
+                    card.innerHTML =
+                        '<div class="kitten-status ' + k.status + '">' + statusLabel + '</div>' +
+                        '<div class="kitten-image"><img src="' + photoSrc + '" alt="' + name + '" loading="lazy"></div>' +
+                        '<div class="kitten-info">' +
+                            '<h3>' + name + '</h3>' +
+                            '<p class="kitten-color"><span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:.8rem;font-weight:700;background:' + sexColor + ';color:#fff;margin-right:6px">' + sexIcon + ' ' + sexLabel + '</span>' + colorText + '</p>' +
+                            btnHtml +
+                        '</div>';
+
                     card.onclick = function(e) { if (!e.target.closest('.btn-reserve')) showKittenProfile(k, data.litter_code); };
-
-                    // Update status badge
-                    var badge = card.querySelector('.kitten-status');
-                    if (badge) {
-                        badge.className = 'kitten-status ' + k.status;
-                        var labels = { available: 'Available', pending: 'Pending Deposit', reserved: 'Reserved', sold: 'Sold' };
-                        badge.textContent = labels[k.status] || k.status;
-                    }
-
-                    // Update name
-                    var nameEl = card.querySelector('.kitten-info h3');
-                    if (nameEl && k.name) nameEl.textContent = k.name;
-
-                    // Update color and sex
-                    var colorEl = card.querySelector('.kitten-color');
-                    if (colorEl) {
-                        var parts = [];
-                        // Sex badge
-                        var sexLabel = k.sex === 'male' ? 'Male' : k.sex === 'female' ? 'Female' : 'TBD';
-                        var sexIcon = k.sex === 'male' ? '\u2642' : k.sex === 'female' ? '\u2640' : '\u2754';
-                        var sexColor = k.sex === 'male' ? '#87A5B4' : k.sex === 'female' ? '#D4879B' : '#C8B88A';
-                        // Color info
-                        var colorText = (k.color && k.color !== 'TBD' && k.color !== 'Color developing') ? k.color : 'Color developing';
-                        colorEl.innerHTML = '<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:.8rem;font-weight:700;background:' + sexColor + ';color:#fff;margin-right:6px">' + sexIcon + ' ' + sexLabel + '</span>' + colorText;
-                    }
-
-                    // Update reserve button with kitten name and status
-                    var btn = card.querySelector('.btn-reserve');
-                    if (btn) {
-                        if (k.status === 'available' && k.name) {
-                            btn.textContent = 'Reserve ' + k.name;
-                        }
-                        if (k.status !== 'available') {
-                            btn.disabled = true;
-                            btn.style.opacity = '0.5';
-                            btn.style.cursor = 'not-allowed';
-                            if (k.status === 'sold') { btn.textContent = 'Sold'; btn.style.background = '#8B3A3A'; }
-                            else if (k.status === 'reserved') { btn.textContent = 'Reserved'; btn.style.background = '#D4AF37'; btn.style.color = '#3E3229'; }
-                            else if (k.status === 'pending') { btn.textContent = 'Reservation Pending'; btn.style.background = '#87A5B4'; }
-                        }
-                    }
+                    kittensGrid.appendChild(card);
                 });
-            }).catch(function () { /* fail silently - static fallback */ });
+            }).catch(function () { kittensGrid.innerHTML = '<div style="text-align:center;padding:40px;color:#6B5B4B">Unable to load kittens. Please refresh the page.</div>'; });
     }
 });
 
