@@ -558,7 +558,7 @@ async function sendEmail(to, subject, body, toName) {
 let _schemaReady = false;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     // Set Brevo key from environment secret
     _brevoKey = env.BREVO_API_KEY || null;
 
@@ -645,13 +645,13 @@ export default {
         const litterInfo = activeLitter ? activeLitter.litter_code + ' (' + activeLitter.sire_name + ' x ' + activeLitter.dam_name + ', born ' + activeLitter.born_date + ')' : '';
 
         // Sync to Brevo CRM
-        await syncToBrevoCRM({ name, email, phone, source: 'contact', status: 'new' }, BREVO_LISTS.leads, {
+        ctx.waitUntil(syncToBrevoCRM({ name, email, phone, source: 'contact', status: 'new' }, BREVO_LISTS.leads, {
           LITTER_INFO: litterInfo
-        });
+        }).catch(() => {}));
 
         // Notify Deanna of new contact
-        await sendEmail('Deanna@blueskycattery.com', 'New Contact: ' + name,
-          'New contact form submission:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nSubject: ' + (subject || 'General') + '\n\nMessage:\n' + message + '\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
+        ctx.waitUntil(sendEmail('Deanna@blueskycattery.com', 'New Contact: ' + name,
+          'New contact form submission:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nSubject: ' + (subject || 'General') + '\n\nMessage:\n' + message + '\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna').catch(() => {}));
 
         return json({ success: true, message: 'Contact saved' });
       }
@@ -689,15 +689,15 @@ export default {
         const litterInfo = activeLitter ? activeLitter.litter_code + ' (' + activeLitter.sire_name + ' x ' + activeLitter.dam_name + ', born ' + activeLitter.born_date + ')' : '';
 
         // Sync to Brevo CRM with kitten + litter info
-        await syncToBrevoCRM({ name, email, phone, source: 'reservation', status: 'new' }, BREVO_LISTS.leads, {
+        ctx.waitUntil(syncToBrevoCRM({ name, email, phone, source: 'reservation', status: 'new' }, BREVO_LISTS.leads, {
           KITTEN_INTEREST: kitten || 'General interest',
           LITTER_INFO: litterInfo,
           LITTERS_APPLIED: activeLitter ? activeLitter.litter_code : ''
-        });
+        }).catch(() => {}));
 
         // Notify Deanna of new reservation
-        await sendEmail('Deanna@blueskycattery.com', 'New Kitten Reservation: ' + name,
-          'New kitten reservation request:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nKitten: ' + (kitten || 'General') + '\n\nFull details:\n' + fields + '\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
+        ctx.waitUntil(sendEmail('Deanna@blueskycattery.com', 'New Kitten Reservation: ' + name,
+          'New kitten reservation request:\n\nName: ' + name + '\nEmail: ' + email + '\nPhone: ' + (phone || 'N/A') + '\nKitten: ' + (kitten || 'General') + '\n\nFull details:\n' + fields + '\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna').catch(() => {}));
 
         // Auto-create account if password provided
         let accountToken = null;
@@ -1137,11 +1137,11 @@ export default {
           'Welcome to Blue Sky Cattery!\n\nPlease verify your email address by clicking the link below:\n\n' + verifyUrl + '\n\nThis link expires in 24 hours.\n\nIf you did not create this account, you can safely ignore this email.\n\nWarm regards,\nBlue Sky Cattery', name);
 
         // Sync to Brevo
-        await syncToBrevoCRM({ name, email, source: 'self_register', status: 'new' }, BREVO_LISTS.leads, {});
+        ctx.waitUntil(syncToBrevoCRM({ name, email, source: 'self_register', status: 'new' }, BREVO_LISTS.leads, {}).catch(() => {}));
 
         // Notify admin
-        await sendEmail('Deanna@blueskycattery.com', 'New Self-Registration: ' + name,
-          'A new user registered directly on the portal.\n\nName: ' + name + '\nEmail: ' + email + '\n\nThey need to verify their email before accessing the portal.\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna');
+        ctx.waitUntil(sendEmail('Deanna@blueskycattery.com', 'New Self-Registration: ' + name,
+          'A new user registered directly on the portal.\n\nName: ' + name + '\nEmail: ' + email + '\n\nThey need to verify their email before accessing the portal.\n\n---\nView in admin portal: https://admin.blueskycattery.com', 'Deanna').catch(() => {}));
 
         return json({ success: true, needsVerification: true, message: 'Account created! Check your email to verify.' });
       }
@@ -1157,7 +1157,7 @@ export default {
         await env.DB.prepare('UPDATE users SET email_verified = 1, verify_token = NULL, updated_at = ? WHERE id = ?').bind(now(), user.id).run();
 
         // Now move to approved in Brevo
-        await updateBrevoContact(user.email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]);
+        ctx.waitUntil(updateBrevoContact(user.email, { LEAD_STATUS: 'self_registered', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]).catch(() => {}));
 
         const sessionToken = await createSession(env.DB, user.id, user.role);
         return json({ success: true, token: sessionToken, message: 'Email verified! You are now logged in.' });
@@ -1273,7 +1273,7 @@ export default {
 
         // Sync to Brevo CRM with application data
         const riskLevel = grading.risks.length === 0 ? 'low' : grading.risks.length <= 2 ? 'medium' : 'high';
-        await updateBrevoContact(data.email, {
+        ctx.waitUntil(updateBrevoContact(data.email, {
           APPLICATION_SCORE: grading.score,
           APPLICATION_GRADE: grading.grade,
           PURPOSE: data.purpose || 'pet',
@@ -1284,11 +1284,11 @@ export default {
           PARTNER_PHONE: data.partner_phone || '',
           HOME_ADDRESS: data.home_address || '',
           CITY_STATE: data.city_state || ''
-        }, [BREVO_LISTS.active], [BREVO_LISTS.approved]);
+        }, [BREVO_LISTS.active], [BREVO_LISTS.approved]).catch(() => {}));
 
         // If partner email provided, create/update partner in Brevo too
         if (data.partner_email) {
-          await syncToBrevoCRM({
+          ctx.waitUntil(syncToBrevoCRM({
             name: data.partner_name || 'Partner of ' + data.full_name,
             email: data.partner_email,
             phone: data.partner_phone,
@@ -1297,7 +1297,7 @@ export default {
           }, BREVO_LISTS.active, {
             PARTNER_NAME: data.full_name,
             PARTNER_EMAIL: data.email
-          });
+          }).catch(() => {}));
         }
 
         // Build notification with match info
@@ -1307,7 +1307,7 @@ export default {
         if (grading.risks.length > 0) notification += '\n\nRisks: ' + grading.risks.join(', ');
         notification += '\n\nReview in admin portal: https://admin.blueskycattery.com';
 
-        await sendEmail('Deanna@blueskycattery.com', 'New Application: ' + data.full_name + ' (' + grading.grade + ')', notification, 'Deanna');
+        ctx.waitUntil(sendEmail('Deanna@blueskycattery.com', 'New Application: ' + data.full_name + ' (' + grading.grade + ')', notification, 'Deanna').catch(() => {}));
 
         return json({ success: true, message: 'Application submitted' });
       }

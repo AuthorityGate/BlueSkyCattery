@@ -754,11 +754,11 @@ export default {
         await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
 
         // Move in Brevo: Leads -> Approved Applicants
-        await updateBrevoContact(lead.email, { LEAD_STATUS: 'approved', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]);
+        ctx.waitUntil(updateBrevoContact(lead.email, { LEAD_STATUS: 'approved', APPLICANT_TYPE: 'applicant' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]).catch(() => {}));
 
         const emailBody = `Dear ${lead.name},\n\nThank you for your interest in Blue Sky Cattery! We're excited to invite you to complete our adoption application.\n\nYour login credentials:\nEmail: ${lead.email}\nPassword: ${password}\n\nPlease visit https://portal.blueskycattery.com to log in and complete your application.\n\nWe look forward to learning more about you!\n\nWarm regards,\nDeanna\nBlue Sky Cattery`;
 
-        await sendEmail(lead.email, 'Welcome to Blue Sky Cattery - Application Portal Access', emailBody, lead.name);
+        ctx.waitUntil(sendEmail(lead.email, 'Welcome to Blue Sky Cattery - Application Portal Access', emailBody, lead.name).catch(() => {}));
 
         await env.DB.prepare('UPDATE users SET welcome_sent_at = ? WHERE email = ?').bind(now(), lead.email).run();
 
@@ -1656,7 +1656,7 @@ export default {
         if (data.admin_notes !== undefined) {
           const user = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(userId).first();
           if (user) {
-            await updateBrevoContact(user.email, { ADMIN_NOTES: data.admin_notes }, [], []);
+            ctx.waitUntil(updateBrevoContact(user.email, { ADMIN_NOTES: data.admin_notes }, [], []).catch(() => {}));
           }
         }
 
@@ -1792,9 +1792,9 @@ export default {
         const passCount = Object.values(merged).filter(v => v === 'pass').length;
         const failCount = Object.values(merged).filter(v => v === 'fail').length;
         const totalChecked = Object.values(merged).filter(v => v !== 'not_checked' && v !== undefined).length;
-        await updateBrevoContact(user.email, {
+        ctx.waitUntil(updateBrevoContact(user.email, {
           ADMIN_NOTES: (user.admin_notes || '') + (user.admin_notes ? ' | ' : '') + 'Verified: ' + passCount + '/' + totalChecked + ' pass, ' + failCount + ' fail'
-        }, [], []);
+        }, [], []).catch(() => {}));
 
         await writeAuditLog(env.DB, session.user_id, 'user_verification_updated', { target_user_id: userId, verification: merged });
         return json({ success: true });
@@ -1903,7 +1903,7 @@ export default {
         await env.DB.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').bind(hash, now(), userId).run();
 
         const emailBody = `Hello,\n\nYour password for Blue Sky Cattery portal has been reset by an administrator.\n\nNew Password: ${newPassword}\n\nPlease visit https://portal.blueskycattery.com to log in.\n\nWarm regards,\nBlue Sky Cattery`;
-        await sendEmail(user.email, 'Blue Sky Cattery - Password Reset', emailBody, user.email);
+        ctx.waitUntil(sendEmail(user.email, 'Blue Sky Cattery - Password Reset', emailBody, user.email).catch(() => {}));
 
         await writeAuditLog(env.DB, session.user_id, 'user_password_reset', { target_user_id: userId, email: user.email });
         return json({ success: true, message: 'Password reset and emailed to ' + user.email, tempPassword: newPassword });
