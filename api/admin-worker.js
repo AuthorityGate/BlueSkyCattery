@@ -3318,7 +3318,7 @@ async function showKittenEditModal(kittenId, kitten) {
   photoHtml += '<div style="margin-top:8px;padding:10px;background:#F5EDE0;border-radius:6px;font-size:.75rem;color:#6B5B4B">';
   photoHtml += '<strong>Upload options:</strong><br>';
   photoHtml += '&#8226; <strong>Here:</strong> Click the file picker above to upload from your device. Photos are auto-optimized for web.<br>';
-  photoHtml += '&#8226; <strong>By email:</strong> Send photos to <strong>kittens@blueskycattery.com</strong> from an admin email. Name files after the kitten &mdash; e.g. <strong>' + esc(kitten.name || 'Kitten') + '1.jpg</strong>, <strong>' + esc(kitten.name || 'Kitten') + '2.jpg</strong>. They will be matched and added automatically. Unmatched photos go to the Todo page for manual assignment.<br>';
+  photoHtml += '&#8226; <strong>By email:</strong> Send photos to <strong>photos@reply.blueskycattery.com</strong> from an admin email. Name files after the kitten &mdash; e.g. <strong>' + esc(kitten.name || 'Kitten') + '1.jpg</strong>, <strong>' + esc(kitten.name || 'Kitten') + '2.jpg</strong>. They will be matched and added automatically. Unmatched photos go to the Todo page for manual assignment.<br>';
   photoHtml += '&#8226; <strong>Buttons:</strong> &#9733; = set as primary photo &bull; &#8644; = reassign to different cat/kitten &bull; &#10005; = delete</div>';
   photoHtml += '</div>';
 
@@ -3560,7 +3560,7 @@ async function showCatModal(cat) {
     photoHtml += '<div style="margin-top:8px;padding:10px;background:#F5EDE0;border-radius:6px;font-size:.75rem;color:#6B5B4B">';
     photoHtml += '<strong>Upload options:</strong><br>';
     photoHtml += '&#8226; <strong>Here:</strong> Click the file picker above to upload from your device. Photos are auto-optimized for web.<br>';
-    photoHtml += '&#8226; <strong>By email:</strong> Send photos to <strong>kittens@blueskycattery.com</strong> from an admin email. Name files after the cat &mdash; e.g. <strong>' + esc(cat.name) + '1.jpg</strong>, <strong>' + esc(cat.name) + '2.jpg</strong>. They will be matched and added automatically. Unmatched photos go to the Todo page for manual assignment.<br>';
+    photoHtml += '&#8226; <strong>By email:</strong> Send photos to <strong>photos@reply.blueskycattery.com</strong> from an admin email. Name files after the cat &mdash; e.g. <strong>' + esc(cat.name) + '1.jpg</strong>, <strong>' + esc(cat.name) + '2.jpg</strong>. They will be matched and added automatically. Unmatched photos go to the Todo page for manual assignment.<br>';
     photoHtml += '&#8226; <strong>Buttons:</strong> &#9733; = set as primary photo &bull; &#8644; = reassign to different cat/kitten &bull; &#10005; = delete</div>';
     photoHtml += '</div>';
   }
@@ -4348,7 +4348,7 @@ function renderHelp(container) {
         ['Add a Litter', 'Click + New Litter. Enter the sire, dam, born date, go-home date, and number of kittens. Kittens are auto-created.'],
         ['Edit a Kitten', 'Click Edit to update name, color, sex, price, status, reserved by, photos, deposit info, and notes.'],
         ['Kitten Status', 'Available, Pending (awaiting deposit), Reserved (deposit received), or Sold.'],
-        ['Photos', 'Upload photos directly in the edit modal or email them to kittens@blueskycattery.com with filenames matching the kitten name (e.g., Hannah1.jpg). Photos are auto-optimized for web.'],
+        ['Photos', 'Upload photos directly in the edit modal or email them to photos@reply.blueskycattery.com with filenames matching the kitten name (e.g., Hannah1.jpg) or put the name in the subject line. Photos are auto-optimized for web.'],
         ['Deposit Tracking', 'In the edit modal: enter deposit amount, date received, payment method. Balance auto-calculates from the kitten price.'],
         ['Go-Home Checklist', 'For reserved/sold kittens: 9-item checklist (spay/neuter, vaccinations, microchip, contract, etc). Each checkbox saves immediately.'],
         ['Announce Litter', 'Click Announce Litter to email all interested leads and waitlist subscribers about the new litter.'],
@@ -4360,7 +4360,7 @@ function renderHelp(container) {
       items: [
         ['What is it?', 'Manage your breeding cats. These show on the public website.'],
         ['Add / Edit', 'Name, breed, role (king/queen), color, registration, bio, health tested status, sort order. Photos work the same as kittens.'],
-        ['Photos', 'Upload in the edit modal or email to kittens@blueskycattery.com with the cat name as filename (e.g., Samurai1.jpg).'],
+        ['Photos', 'Upload in the edit modal or email to photos@reply.blueskycattery.com with the cat name as filename (e.g., Samurai1.jpg) or in the subject line.'],
       ]
     },
     {
@@ -4409,7 +4409,7 @@ function renderHelp(container) {
       title: 'Email Photos (Automatic)',
       icon: '&#128248;',
       items: [
-        ['How it works', 'Email photos to kittens@blueskycattery.com from an admin email address (Deanna or Kevin). Name files after the cat or kitten: Hannah1.jpg, Hannah2.jpg, Samurai_front.jpg, etc.'],
+        ['How it works', 'Email photos to photos@reply.blueskycattery.com from an admin email address (Deanna or Kevin). Name files after the cat or kitten (Hannah1.jpg) OR put the name in the email subject line. All attached photos will be matched and added automatically.'],
         ['Matching', 'The system strips numbers and underscores from the filename and matches to cat/kitten names. Hannah2.jpg matches kitten "Hannah". Chili_3.png matches cat "Chili".'],
         ['Auto-optimization', 'All photos uploaded through the admin portal are automatically resized and optimized for web (max 1200px, 80% quality). Phone photos go from 5MB to ~300KB.'],
         ['Unmatched photos', 'If a filename does not match any cat or kitten, the photo is saved as "unassigned" and appears on your To Do page. Assign it from there using the dropdown.'],
