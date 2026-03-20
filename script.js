@@ -141,6 +141,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (!data.kittens || !data.kittens.length) return;
+                _loadedKittens = data.kittens; // Store for reservation modal
                 var cards = kittensGrid.querySelectorAll('.kitten-card');
                 data.kittens.forEach(function (k, i) {
                     var card = cards[i];
@@ -173,9 +174,12 @@ document.addEventListener('DOMContentLoaded', function () {
                         colorEl.innerHTML = '<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:.8rem;font-weight:700;background:' + sexColor + ';color:#fff;margin-right:6px">' + sexIcon + ' ' + sexLabel + '</span>' + colorText;
                     }
 
-                    // Hide reserve button if not available
+                    // Update reserve button with kitten name and status
                     var btn = card.querySelector('.btn-reserve');
                     if (btn) {
+                        if (k.status === 'available' && k.name) {
+                            btn.textContent = 'Reserve ' + k.name;
+                        }
                         if (k.status !== 'available') {
                             btn.disabled = true;
                             btn.style.opacity = '0.5';
@@ -193,20 +197,24 @@ document.addEventListener('DOMContentLoaded', function () {
 
 // --- Reservation Modal ---
 var selectedKitten = null;
+var _loadedKittens = []; // Stored from API for name lookups
 
 function openReservation(kittenNum) {
     selectedKitten = kittenNum;
     var modal = document.getElementById('reservationModal');
-    var kittenName = document.getElementById('modalKittenName');
+    var kittenNameEl = document.getElementById('modalKittenName');
     var form = document.getElementById('reservationForm');
     var success = document.getElementById('formSuccess');
 
-    kittenName.textContent = 'Kitten #' + kittenNum;
-    // Set hidden fields for the native form submission
+    // Look up actual kitten name from API data
+    var kittenData = _loadedKittens.find(function(k) { return k.number === kittenNum; });
+    var displayName = kittenData ? kittenData.name : 'Kitten #' + kittenNum;
+
+    kittenNameEl.textContent = displayName;
     var kittenField = document.getElementById('resKitten');
     var subjectField = document.getElementById('resSubject');
-    if (kittenField) kittenField.value = 'Kitten #' + kittenNum;
-    if (subjectField) subjectField.value = 'Kitten Reservation Request - Kitten #' + kittenNum;
+    if (kittenField) kittenField.value = displayName;
+    if (subjectField) subjectField.value = 'Kitten Reservation Request - ' + displayName;
 
     form.style.display = 'block';
     success.style.display = 'none';
@@ -387,7 +395,7 @@ function showKittenProfile(kitten, litterCode) {
         if (hasPortalToken) {
             html += '<div style="text-align:center;margin:16px 24px"><a href="https://portal.blueskycattery.com" class="btn btn-primary" style="display:inline-block;text-decoration:none">Go to Portal to Complete Application</a></div>';
         } else {
-            html += '<div style="text-align:center;margin:16px 24px"><button class="btn btn-primary" onclick="this.closest(\'.profile-overlay\').remove();openReservation(' + kitten.number + ')">Reserve ' + (kitten.name || 'This Kitten') + '</button></div>';
+            html += '<div style="text-align:center;margin:16px 24px"><button class="btn btn-primary" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\';openReservation(' + kitten.number + ')">Reserve ' + (kitten.name || 'This Kitten') + '</button></div>';
         }
     }
 
