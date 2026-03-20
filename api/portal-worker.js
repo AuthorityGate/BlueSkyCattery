@@ -890,7 +890,7 @@ export default {
               let subjectEntity = null;
               const subjectClean = (subject || '').replace(/^(re:|fwd?:|photos?\s*(of|for)?:?\s*)/gi, '').trim();
               if (subjectClean) {
-                const subKitten = await env.DB.prepare('SELECT id, name FROM kittens WHERE LOWER(name) = LOWER(?)').bind(subjectClean).first();
+                const subKitten = await env.DB.prepare("SELECT k.id, k.name FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE LOWER(k.name) = LOWER(?) AND l.status = 'active'").bind(subjectClean).first();
                 if (subKitten) {
                   subjectEntity = { type: 'kitten', id: subKitten.id, name: subKitten.name };
                 } else {
@@ -908,7 +908,7 @@ export default {
                 const baseName = filename.replace(/\.[^.]+$/, '').replace(/[\d_\-\s]+$/, '').trim();
                 let entityType = null, entityId = null, entityName = null;
                 if (baseName && baseName.length > 1) {
-                  const kitten = await env.DB.prepare('SELECT id, name FROM kittens WHERE LOWER(name) = LOWER(?)').bind(baseName).first();
+                  const kitten = await env.DB.prepare("SELECT k.id, k.name FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE LOWER(k.name) = LOWER(?) AND l.status = 'active'").bind(baseName).first();
                   if (kitten) {
                     entityType = 'kitten'; entityId = kitten.id; entityName = kitten.name;
                   } else {
