@@ -2656,37 +2656,66 @@ h1, h2, h3, h4 {
 .profile-gallery {
     padding: 0 24px 24px;
 }
+.profile-header {
+    position: relative;
+}
 .gallery-nav {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 350px;
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 16px;
-    margin-bottom: 12px;
+    justify-content: space-between;
+    padding: 0 10px;
+    pointer-events: none;
+    z-index: 5;
 }
 .gallery-arrow {
-    background: var(--color-rust);
+    background: rgba(0,0,0,.3);
     color: #fff;
     border: none;
     border-radius: 50%;
-    width: 40px;
-    height: 40px;
-    font-size: 1.2rem;
+    width: 44px;
+    height: 44px;
+    font-size: 1.4rem;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: .2s;
+    pointer-events: all;
+    backdrop-filter: blur(4px);
 }
 .gallery-arrow:hover {
-    background: var(--color-text);
-    transform: scale(1.1);
+    background: rgba(0,0,0,.6);
 }
 .gallery-counter {
-    font-size: .85rem;
+    font-size: .82rem;
     font-weight: 600;
-    color: var(--color-muted);
-    min-width: 60px;
-    text-align: center;
+    color: #fff;
+    background: rgba(0,0,0,.4);
+    padding: 4px 12px;
+    border-radius: 20px;
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+.profile-gallery-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 350px;
+    pointer-events: none;
+    z-index: 5;
+}
+.gallery-thumbstrip {
+    padding: 8px 24px 0;
 }
 .gallery-strip {
     display: flex;
@@ -2730,6 +2759,8 @@ h1, h2, h3, h4 {
 @media (max-width: 600px) {
     .profile-modal { border-radius: 12px; }
     .profile-hero { height: 250px; border-radius: 12px 12px 0 0; }
+    .profile-gallery-overlay, .gallery-nav { height: 250px; }
     .profile-title h2 { font-size: 1.4rem; }
     .profile-details { flex-direction: column; }
+    .gallery-thumbstrip { padding: 8px 16px 0; }
 }

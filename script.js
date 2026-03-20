@@ -319,7 +319,9 @@ function showCatProfile(cat) {
     var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
     html += '<div class="profile-hero"><img src="' + (cat.photo_url || '') + '" alt="' + cat.name + '"></div>';
-    html += '<div class="profile-gallery" id="catGallery' + cat.id + '"></div>';
+    html += '<div class="profile-gallery-overlay" id="catGallery' + cat.id + '"></div>';
+    html += '</div>';
+    html += '<div class="gallery-thumbstrip" id="catThumbs' + cat.id + '"></div>';
     html += '<div class="profile-title">';
     html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + badgeColor + ';color:#fff;text-transform:uppercase;margin-bottom:8px">' + badgeText + '</span>';
     html += '<h2>' + cat.name + '</h2>';
@@ -367,7 +369,9 @@ function showKittenProfile(kitten, litterCode) {
     var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
     html += '<div class="profile-hero"><img src="' + (kitten.photo_url || kitten._cardPhoto || 'Images/PXL_20260317_165644165.PORTRAIT.jpg') + '" alt="' + (kitten.name || 'Kitten') + '"></div>';
-    html += '<div class="profile-gallery" id="kittenGallery' + kitten.number + '"></div>';
+    html += '<div class="profile-gallery-overlay" id="kittenGallery' + kitten.number + '"></div>';
+    html += '</div>';
+    html += '<div class="gallery-thumbstrip" id="kittenThumbs' + kitten.number + '"></div>';
     html += '<div class="profile-title">';
     html += '<div style="display:flex;gap:8px;margin-bottom:8px">';
     html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + sexColor + ';color:#fff">' + sexIcon + ' ' + sexLabel + '</span>';
@@ -424,7 +428,6 @@ function buildGallery(galleryEl, photos, heroImg) {
     if (!galleryEl || !photos || photos.length === 0) return;
     var currentIdx = 0;
     var allPhotos = [];
-    // Include hero image as first if it's not already in photos
     if (heroImg && heroImg.src) {
         var heroInList = photos.some(function(p) { return heroImg.src.indexOf(p.url) !== -1; });
         if (!heroInList) allPhotos.push({ url: heroImg.src });
@@ -432,17 +435,23 @@ function buildGallery(galleryEl, photos, heroImg) {
     photos.forEach(function(p) { allPhotos.push(p); });
     if (allPhotos.length <= 1) return;
 
-    var ghtml = '<div class="gallery-nav">';
-    ghtml += '<button class="gallery-arrow gallery-prev" id="' + galleryEl.id + 'Prev">&#10094;</button>';
-    ghtml += '<span class="gallery-counter" id="' + galleryEl.id + 'Counter">1 / ' + allPhotos.length + '</span>';
-    ghtml += '<button class="gallery-arrow gallery-next" id="' + galleryEl.id + 'Next">&#10095;</button>';
-    ghtml += '</div>';
-    ghtml += '<div class="gallery-strip" id="' + galleryEl.id + 'Strip">';
+    // Overlay arrows + counter on the hero image
+    var navHtml = '<div class="gallery-nav">';
+    navHtml += '<button class="gallery-arrow" id="' + galleryEl.id + 'Prev">&#10094;</button>';
+    navHtml += '<button class="gallery-arrow" id="' + galleryEl.id + 'Next">&#10095;</button>';
+    navHtml += '<span class="gallery-counter" id="' + galleryEl.id + 'Counter">1 / ' + allPhotos.length + '</span>';
+    navHtml += '</div>';
+    galleryEl.innerHTML = navHtml;
+
+    // Thumbnail strip below hero
+    var thumbsEl = document.getElementById(galleryEl.id.replace('Gallery', 'Thumbs').replace('gallery', 'Thumbs'));
+    if (!thumbsEl) thumbsEl = galleryEl; // fallback
+    var thumbHtml = '<div class="gallery-strip">';
     allPhotos.forEach(function(p, i) {
-        ghtml += '<div class="gallery-thumb' + (i === 0 ? ' gallery-thumb-active' : '') + '" data-idx="' + i + '"><img src="' + p.url + '" alt="Photo ' + (i+1) + '"></div>';
+        thumbHtml += '<div class="gallery-thumb' + (i === 0 ? ' gallery-thumb-active' : '') + '" data-idx="' + i + '"><img src="' + p.url + '" alt="Photo ' + (i+1) + '"></div>';
     });
-    ghtml += '</div>';
-    galleryEl.innerHTML = ghtml;
+    thumbHtml += '</div>';
+    thumbsEl.innerHTML = thumbHtml;
 
     function showPhoto(idx) {
         currentIdx = idx;
@@ -450,7 +459,7 @@ function buildGallery(galleryEl, photos, heroImg) {
         if (currentIdx >= allPhotos.length) currentIdx = 0;
         heroImg.src = allPhotos[currentIdx].url;
         document.getElementById(galleryEl.id + 'Counter').textContent = (currentIdx + 1) + ' / ' + allPhotos.length;
-        galleryEl.querySelectorAll('.gallery-thumb').forEach(function(t, i) {
+        (thumbsEl || galleryEl).querySelectorAll('.gallery-thumb').forEach(function(t, i) {
             t.className = 'gallery-thumb' + (i === currentIdx ? ' gallery-thumb-active' : '');
         });
         // Scroll active thumb into view
@@ -460,7 +469,7 @@ function buildGallery(galleryEl, photos, heroImg) {
 
     document.getElementById(galleryEl.id + 'Prev').onclick = function() { showPhoto(currentIdx - 1); };
     document.getElementById(galleryEl.id + 'Next').onclick = function() { showPhoto(currentIdx + 1); };
-    galleryEl.querySelectorAll('.gallery-thumb').forEach(function(t) {
+    (thumbsEl || galleryEl).querySelectorAll('.gallery-thumb').forEach(function(t) {
         t.onclick = function() { showPhoto(parseInt(t.getAttribute('data-idx'))); };
     });
 
