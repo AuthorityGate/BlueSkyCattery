@@ -98,6 +98,8 @@ document.addEventListener('DOMContentLoaded', function () {
                             '<p class="royal-desc">' + (cat.bio || '') + '</p>' +
                             '<div class="royal-details">' + details.map(function (d) { return '<span>' + d + '</span>'; }).join('') + '</div>' +
                         '</div>';
+                    card.style.cursor = 'pointer';
+                    card.onclick = function() { showCatProfile(cat); };
                     royalsGrid.appendChild(card);
                 });
             }).catch(function () { /* fail silently - static HTML fallback */ });
@@ -143,6 +145,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 data.kittens.forEach(function (k, i) {
                     var card = cards[i];
                     if (!card) return;
+                    card.style.cursor = 'pointer';
+                    card.onclick = function(e) { if (!e.target.closest('.btn-reserve')) showKittenProfile(k, data.litter_code); };
 
                     // Update status badge
                     var badge = card.querySelector('.kitten-status');
@@ -270,6 +274,127 @@ function submitSignup(e, type) {
     });
     return false;
 }
+
+// --- Cat/Kitten Profile Modal ---
+function showCatProfile(cat) {
+    var overlay = document.createElement('div');
+    overlay.className = 'profile-overlay';
+    overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+    var modal = document.createElement('div');
+    modal.className = 'profile-modal';
+
+    var badgeText = cat.role === 'king' ? 'King' : 'Queen';
+    var badgeColor = cat.role === 'king' ? '#87A5B4' : '#C8849B';
+
+    var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove()">&times;</button>';
+    html += '<div class="profile-header">';
+    html += '<div class="profile-hero"><img src="' + (cat.photo_url || '') + '" alt="' + cat.name + '"></div>';
+    html += '<div class="profile-title">';
+    html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + badgeColor + ';color:#fff;text-transform:uppercase;margin-bottom:8px">' + badgeText + '</span>';
+    html += '<h2>' + cat.name + '</h2>';
+    html += '<p class="profile-breed">' + (cat.breed || 'Oriental Shorthair') + '</p>';
+    html += '</div></div>';
+
+    if (cat.bio) html += '<div class="profile-bio"><p>' + cat.bio + '</p></div>';
+
+    html += '<div class="profile-details">';
+    if (cat.color) html += '<div class="profile-detail"><span class="detail-label">Color</span><span>' + cat.color + '</span></div>';
+    if (cat.registration) html += '<div class="profile-detail"><span class="detail-label">Registration</span><span>' + cat.registration + '</span></div>';
+    if (cat.health_tested) html += '<div class="profile-detail"><span class="detail-label">Health Tested</span><span style="color:#7A8B6F;font-weight:700">Yes &#10003;</span></div>';
+    html += '</div>';
+
+    // Photo gallery placeholder
+    html += '<div class="profile-gallery" id="catGallery' + cat.id + '"></div>';
+
+    modal.innerHTML = html;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+
+    // Fetch additional photos
+    fetch(PORTAL_API + '/photos/cat/' + cat.id)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var gallery = document.getElementById('catGallery' + cat.id);
+            if (!gallery || !data.photos || data.photos.length <= 0) return;
+            var ghtml = '<h3 style="margin:20px 0 12px;font-size:1rem;color:#A0522D">Photo Gallery</h3>';
+            ghtml += '<div class="gallery-thumbs">';
+            data.photos.forEach(function(p) {
+                ghtml += '<div class="gallery-thumb" onclick="this.closest(\'.profile-modal\').querySelector(\'.profile-hero img\').src=\'' + p.url + '\'"><img src="' + p.url + '" alt="Photo"></div>';
+            });
+            ghtml += '</div>';
+            gallery.innerHTML = ghtml;
+        }).catch(function() {});
+}
+
+function showKittenProfile(kitten, litterCode) {
+    var overlay = document.createElement('div');
+    overlay.className = 'profile-overlay';
+    overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+    var modal = document.createElement('div');
+    modal.className = 'profile-modal';
+
+    var sexLabel = kitten.sex === 'male' ? 'Male' : kitten.sex === 'female' ? 'Female' : 'TBD';
+    var sexIcon = kitten.sex === 'male' ? '\u2642' : kitten.sex === 'female' ? '\u2640' : '';
+    var sexColor = kitten.sex === 'male' ? '#87A5B4' : kitten.sex === 'female' ? '#D4879B' : '#C8B88A';
+    var statusColors = { available: '#7A8B6F', reserved: '#D4AF37', pending: '#87A5B4', sold: '#8B3A3A' };
+    var statusLabels = { available: 'Available', pending: 'Pending Deposit', reserved: 'Reserved', sold: 'Sold' };
+    var statusColor = statusColors[kitten.status] || '#6B5B4B';
+
+    var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove()">&times;</button>';
+    html += '<div class="profile-header">';
+    html += '<div class="profile-hero"><img src="' + (kitten.photo_url || 'Images/PXL_20260317_165644165.PORTRAIT.jpg') + '" alt="' + (kitten.name || 'Kitten') + '"></div>';
+    html += '<div class="profile-title">';
+    html += '<div style="display:flex;gap:8px;margin-bottom:8px">';
+    html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + sexColor + ';color:#fff">' + sexIcon + ' ' + sexLabel + '</span>';
+    html += '<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;background:' + statusColor + ';color:#fff">' + (statusLabels[kitten.status] || kitten.status) + '</span>';
+    html += '</div>';
+    html += '<h2>' + (kitten.name || 'Kitten #' + kitten.number) + '</h2>';
+    html += '<p class="profile-breed">Oriental Shorthair &mdash; ' + (litterCode || '') + '</p>';
+    html += '</div></div>';
+
+    html += '<div class="profile-details">';
+    if (kitten.color && kitten.color !== 'TBD') html += '<div class="profile-detail"><span class="detail-label">Color</span><span>' + kitten.color + '</span></div>';
+    html += '<div class="profile-detail"><span class="detail-label">Sex</span><span>' + sexLabel + '</span></div>';
+    html += '<div class="profile-detail"><span class="detail-label">Status</span><span style="color:' + statusColor + ';font-weight:700">' + (statusLabels[kitten.status] || kitten.status) + '</span></div>';
+    html += '</div>';
+
+    if (kitten.status === 'available') {
+        html += '<div style="text-align:center;margin-top:16px"><button class="btn btn-primary" onclick="this.closest(\'.profile-overlay\').remove();openReservation(' + kitten.number + ')">Reserve ' + (kitten.name || 'This Kitten') + '</button></div>';
+    }
+
+    html += '<div class="profile-gallery" id="kittenGallery' + kitten.number + '"></div>';
+
+    modal.innerHTML = html;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+
+    // Fetch additional photos
+    fetch(PORTAL_API + '/photos/kitten/' + (kitten.id || kitten.number))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var gallery = document.getElementById('kittenGallery' + kitten.number);
+            if (!gallery || !data.photos || data.photos.length <= 0) return;
+            var ghtml = '<h3 style="margin:20px 0 12px;font-size:1rem;color:#A0522D">Photo Gallery</h3>';
+            ghtml += '<div class="gallery-thumbs">';
+            data.photos.forEach(function(p) {
+                ghtml += '<div class="gallery-thumb" onclick="this.closest(\'.profile-modal\').querySelector(\'.profile-hero img\').src=\'' + p.url + '\'"><img src="' + p.url + '" alt="Photo"></div>';
+            });
+            ghtml += '</div>';
+            gallery.innerHTML = ghtml;
+        }).catch(function() {});
+}
+
+// Close profile on Escape
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        var overlay = document.querySelector('.profile-overlay');
+        if (overlay) { overlay.remove(); document.body.style.overflow = ''; }
+    }
+});
 
 // --- Portal API ---
 var PORTAL_API = 'https://portal.blueskycattery.com/api';
