@@ -341,19 +341,13 @@ function showCatProfile(cat) {
     document.body.appendChild(overlay);
     document.body.style.overflow = 'hidden';
 
-    // Fetch additional photos
+    // Fetch additional photos and build navigable gallery
     fetch(PORTAL_API + '/photos/cat/' + cat.id)
         .then(function(r) { return r.json(); })
         .then(function(data) {
             var gallery = document.getElementById('catGallery' + cat.id);
-            if (!gallery || !data.photos || data.photos.length <= 0) return;
-            var ghtml = '<h3 style="margin:20px 0 12px;font-size:1rem;color:#A0522D">Photo Gallery</h3>';
-            ghtml += '<div class="gallery-thumbs">';
-            data.photos.forEach(function(p) {
-                ghtml += '<div class="gallery-thumb" onclick="this.closest(\'.profile-modal\').querySelector(\'.profile-hero img\').src=\'' + p.url + '\'"><img src="' + p.url + '" alt="Photo"></div>';
-            });
-            ghtml += '</div>';
-            gallery.innerHTML = ghtml;
+            var heroImg = overlay.querySelector('.profile-hero img');
+            buildGallery(gallery, data.photos || [], heroImg);
         }).catch(function() {});
 }
 
@@ -410,19 +404,13 @@ function showKittenProfile(kitten, litterCode) {
     document.body.appendChild(overlay);
     document.body.style.overflow = 'hidden';
 
-    // Fetch additional photos
+    // Fetch additional photos and build navigable gallery
     fetch(PORTAL_API + '/photos/kitten/' + (kitten.id || kitten.number))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             var gallery = document.getElementById('kittenGallery' + kitten.number);
-            if (!gallery || !data.photos || data.photos.length <= 0) return;
-            var ghtml = '<h3 style="margin:20px 0 12px;font-size:1rem;color:#A0522D">Photo Gallery</h3>';
-            ghtml += '<div class="gallery-thumbs">';
-            data.photos.forEach(function(p) {
-                ghtml += '<div class="gallery-thumb" onclick="this.closest(\'.profile-modal\').querySelector(\'.profile-hero img\').src=\'' + p.url + '\'"><img src="' + p.url + '" alt="Photo"></div>';
-            });
-            ghtml += '</div>';
-            gallery.innerHTML = ghtml;
+            var heroImg = overlay.querySelector('.profile-hero img');
+            buildGallery(gallery, data.photos || [], heroImg);
         }).catch(function() {});
 }
 
@@ -433,6 +421,59 @@ document.addEventListener('keydown', function(e) {
         if (overlay) { overlay.remove(); document.body.style.overflow = ''; }
     }
 });
+
+// --- Photo Gallery Navigation ---
+function buildGallery(galleryEl, photos, heroImg) {
+    if (!galleryEl || !photos || photos.length === 0) return;
+    var currentIdx = 0;
+    var allPhotos = [];
+    // Include hero image as first if it's not already in photos
+    if (heroImg && heroImg.src) {
+        var heroInList = photos.some(function(p) { return heroImg.src.indexOf(p.url) !== -1; });
+        if (!heroInList) allPhotos.push({ url: heroImg.src });
+    }
+    photos.forEach(function(p) { allPhotos.push(p); });
+    if (allPhotos.length <= 1) return;
+
+    var ghtml = '<div class="gallery-nav">';
+    ghtml += '<button class="gallery-arrow gallery-prev" id="' + galleryEl.id + 'Prev">&#10094;</button>';
+    ghtml += '<span class="gallery-counter" id="' + galleryEl.id + 'Counter">1 / ' + allPhotos.length + '</span>';
+    ghtml += '<button class="gallery-arrow gallery-next" id="' + galleryEl.id + 'Next">&#10095;</button>';
+    ghtml += '</div>';
+    ghtml += '<div class="gallery-strip" id="' + galleryEl.id + 'Strip">';
+    allPhotos.forEach(function(p, i) {
+        ghtml += '<div class="gallery-thumb' + (i === 0 ? ' gallery-thumb-active' : '') + '" data-idx="' + i + '"><img src="' + p.url + '" alt="Photo ' + (i+1) + '"></div>';
+    });
+    ghtml += '</div>';
+    galleryEl.innerHTML = ghtml;
+
+    function showPhoto(idx) {
+        currentIdx = idx;
+        if (currentIdx < 0) currentIdx = allPhotos.length - 1;
+        if (currentIdx >= allPhotos.length) currentIdx = 0;
+        heroImg.src = allPhotos[currentIdx].url;
+        document.getElementById(galleryEl.id + 'Counter').textContent = (currentIdx + 1) + ' / ' + allPhotos.length;
+        galleryEl.querySelectorAll('.gallery-thumb').forEach(function(t, i) {
+            t.className = 'gallery-thumb' + (i === currentIdx ? ' gallery-thumb-active' : '');
+        });
+        // Scroll active thumb into view
+        var active = galleryEl.querySelector('.gallery-thumb-active');
+        if (active) active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+
+    document.getElementById(galleryEl.id + 'Prev').onclick = function() { showPhoto(currentIdx - 1); };
+    document.getElementById(galleryEl.id + 'Next').onclick = function() { showPhoto(currentIdx + 1); };
+    galleryEl.querySelectorAll('.gallery-thumb').forEach(function(t) {
+        t.onclick = function() { showPhoto(parseInt(t.getAttribute('data-idx'))); };
+    });
+
+    // Keyboard navigation when this modal is open
+    galleryEl._keyHandler = function(e) {
+        if (e.key === 'ArrowLeft') showPhoto(currentIdx - 1);
+        if (e.key === 'ArrowRight') showPhoto(currentIdx + 1);
+    };
+    document.addEventListener('keydown', galleryEl._keyHandler);
+}
 
 // --- Portal API ---
 var PORTAL_API = 'https://portal.blueskycattery.com/api';
