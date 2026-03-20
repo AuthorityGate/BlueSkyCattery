@@ -296,7 +296,7 @@ function submitSignup(e, type) {
 function showCatProfile(cat) {
     var overlay = document.createElement('div');
     overlay.className = 'profile-overlay';
-    overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+    overlay.onclick = function(e) { if (e.target === overlay) { overlay.remove(); document.body.style.overflow = ''; } };
 
     var modal = document.createElement('div');
     modal.className = 'profile-modal';
@@ -304,7 +304,7 @@ function showCatProfile(cat) {
     var badgeText = cat.role === 'king' ? 'King' : 'Queen';
     var badgeColor = cat.role === 'king' ? '#87A5B4' : '#C8849B';
 
-    var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove()">&times;</button>';
+    var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
     html += '<div class="profile-hero"><img src="' + (cat.photo_url || '') + '" alt="' + cat.name + '"></div>';
     html += '<div class="profile-title">';
@@ -348,7 +348,7 @@ function showCatProfile(cat) {
 function showKittenProfile(kitten, litterCode) {
     var overlay = document.createElement('div');
     overlay.className = 'profile-overlay';
-    overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+    overlay.onclick = function(e) { if (e.target === overlay) { overlay.remove(); document.body.style.overflow = ''; } };
 
     var modal = document.createElement('div');
     modal.className = 'profile-modal';
@@ -360,7 +360,7 @@ function showKittenProfile(kitten, litterCode) {
     var statusLabels = { available: 'Available', pending: 'Pending Deposit', reserved: 'Reserved', sold: 'Sold' };
     var statusColor = statusColors[kitten.status] || '#6B5B4B';
 
-    var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove()">&times;</button>';
+    var html = '<button class="profile-close" onclick="this.closest(\'.profile-overlay\').remove();document.body.style.overflow=\'\'">&times;</button>';
     html += '<div class="profile-header">';
     html += '<div class="profile-hero"><img src="' + (kitten.photo_url || 'Images/PXL_20260317_165644165.PORTRAIT.jpg') + '" alt="' + (kitten.name || 'Kitten') + '"></div>';
     html += '<div class="profile-title">';
