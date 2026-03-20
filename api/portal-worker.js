@@ -861,8 +861,6 @@ export default {
       // Brevo inbound email webhook
       if (path === '/api/webhook/inbound-email' && method === 'POST') {
         const payload = await parseBody(request);
-        // Debug: log the raw webhook call
-        try { await env.DB.prepare("INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (0, 'system', 'WEBHOOK DEBUG', ?, datetime('now'))").bind(JSON.stringify(payload).slice(0, 2000)).run(); } catch(e) {}
         const items = payload.items || [payload];
         for (const item of items) {
           const fromEmail = (item.From || item.from || {}).Address || (item.From || item.from || '');
