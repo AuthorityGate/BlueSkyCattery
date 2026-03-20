@@ -905,17 +905,22 @@ export default {
                 const filename = att.Name || att.name || att.Filename || att.filename || 'photo.jpg';
                 let content = att.Content || att.content || att.Base64Content || '';
 
-                // Brevo provides download URLs instead of inline base64
-                if (!content && (att.DownloadUrl || att.downloadUrl || att.Url || att.url || att.DownloadToken)) {
+                // Brevo provides DownloadToken - fetch via Brevo API
+                if (!content && att.DownloadToken) {
                   try {
-                    const dlUrl = att.DownloadUrl || att.downloadUrl || att.Url || att.url;
-                    if (dlUrl) {
-                      const dlResp = await fetch(dlUrl);
-                      if (dlResp.ok) {
-                        const dlBuffer = await dlResp.arrayBuffer();
-                        const dlBytes = new Uint8Array(dlBuffer);
-                        content = btoa(String.fromCharCode(...dlBytes));
+                    const dlResp = await fetch('https://api.brevo.com/v3/inbound/attachments/' + att.DownloadToken, {
+                      headers: { 'api-key': _brevoKey }
+                    });
+                    if (dlResp.ok) {
+                      const dlBuffer = await dlResp.arrayBuffer();
+                      const dlBytes = new Uint8Array(dlBuffer);
+                      // Convert to base64 in chunks to avoid stack overflow on large files
+                      let b64 = '';
+                      const chunkSize = 8192;
+                      for (let i = 0; i < dlBytes.length; i += chunkSize) {
+                        b64 += String.fromCharCode.apply(null, dlBytes.subarray(i, Math.min(i + chunkSize, dlBytes.length)));
                       }
+                      content = btoa(b64);
                     }
                   } catch(e) {}
                 }
