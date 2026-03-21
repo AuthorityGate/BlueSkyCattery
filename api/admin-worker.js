@@ -718,7 +718,33 @@ export default {
         const leadId = path.split('/').pop();
         const lead = await env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(leadId).first();
         const messages = await env.DB.prepare('SELECT * FROM messages WHERE lead_id = ? ORDER BY created_at ASC').bind(leadId).all();
-        return json({ lead, messages: messages.results });
+
+        // Get linked kitten (purchased)
+        let kitten = null;
+        if (lead) {
+          kitten = await env.DB.prepare("SELECT k.*, l.born_date, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE LOWER(k.reserved_by) = LOWER(?) AND k.status IN ('reserved','sold')").bind(lead.email).first();
+          if (!kitten) kitten = await env.DB.prepare("SELECT k.*, l.born_date, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.reserved_lead_id = ? AND k.status IN ('reserved','sold')").bind(leadId).first();
+        }
+
+        // Get linked user account
+        const user = lead ? await env.DB.prepare('SELECT id, role, status, email_verified, created_at FROM users WHERE lead_id = ? OR LOWER(email) = LOWER(?)').bind(leadId, lead.email).first() : null;
+
+        // Get application
+        const application = lead ? await env.DB.prepare('SELECT id, status, score, created_at FROM applications WHERE LOWER(email) = LOWER(?) ORDER BY created_at DESC LIMIT 1').bind(lead.email).first() : null;
+
+        // Calculate go-home date if kitten exists
+        let goHomeDate = null;
+        if (kitten) {
+          if (kitten.notes && kitten.notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
+            goHomeDate = kitten.notes.match(/(\d{4}-\d{2}-\d{2})/)[1];
+          } else if (kitten.born_date) {
+            const gd = new Date(kitten.born_date);
+            gd.setDate(gd.getDate() + 98);
+            goHomeDate = gd.toISOString().slice(0, 10);
+          }
+        }
+
+        return json({ lead, messages: messages.results, kitten, goHomeDate, user, application });
       }
 
       // Update lead status
@@ -946,6 +972,7 @@ export default {
         if (data.balance_due !== undefined) { fields.push('balance_due = ?'); values.push(data.balance_due); }
         if (data.payment_notes !== undefined) { fields.push('payment_notes = ?'); values.push(data.payment_notes); }
         if (data.bio !== undefined) { fields.push('bio = ?'); values.push(data.bio); }
+        if (data.breeding_rights !== undefined) { fields.push('breeding_rights = ?'); values.push(data.breeding_rights ? 1 : 0); }
         fields.push('updated_at = ?'); values.push(now());
         values.push(kittenId);
         await env.DB.prepare('UPDATE kittens SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
@@ -1730,6 +1757,29 @@ export default {
         if (!session) return json({ error: 'Forbidden' }, 403);
         const userId = path.split('/').pop();
         const data = await request.json();
+
+        // If promoting to admin, require email verification first
+        if (data.role === 'admin') {
+          const targetUser = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
+          if (targetUser && targetUser.role !== 'admin') {
+            // Check if this is a verified promotion (token confirmed)
+            if (!data._admin_promote_verified) {
+              // Generate verification token and send email to requesting admin
+              const promoteToken = generateToken();
+              const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
+              await env.DB.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?')
+                .bind('PROMOTE:' + promoteToken + ':' + userId, expires, session.user_id).run();
+              const adminUser = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(session.user_id).first();
+              const verifyUrl = 'https://admin.blueskycattery.com/?promote_token=' + promoteToken;
+              await sendEmail(adminUser.email,
+                'Confirm Admin Promotion - Blue Sky Cattery',
+                'You requested to promote user ' + (targetUser.email) + ' to Admin.\n\nTo confirm this action, click the link below (expires in 30 minutes):\n\n' + verifyUrl + '\n\nIf you did not request this, please ignore this email.\n\n- Blue Sky Cattery Security',
+                'Admin');
+              return json({ success: false, needsVerification: true, message: 'Verification email sent to ' + adminUser.email + '. Check your email to confirm the promotion.' });
+            }
+          }
+        }
+
         const fields = [];
         const values = [];
         if (data.role !== undefined) { fields.push('role = ?'); values.push(data.role); }
@@ -1749,6 +1799,28 @@ export default {
 
         await writeAuditLog(env.DB, session.user_id, 'user_updated', { target_user_id: userId, changes: data });
         return json({ success: true });
+      }
+
+      // Verify admin promotion token
+      if (path === '/api/admin/verify-promote' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const { token } = await request.json();
+        if (!token) return json({ error: 'Token required' }, 400);
+
+        const admin = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(session.user_id).first();
+        if (!admin || !admin.reset_token || !admin.reset_token.startsWith('PROMOTE:')) {
+          return json({ error: 'No pending promotion' }, 400);
+        }
+        const parts = admin.reset_token.split(':');
+        if (parts[1] !== token) return json({ error: 'Invalid token' }, 400);
+        if (new Date(admin.reset_expires) < new Date()) return json({ error: 'Token expired' }, 400);
+
+        const targetUserId = parts[2];
+        await env.DB.prepare('UPDATE users SET role = ?, updated_at = ? WHERE id = ?').bind('admin', now(), targetUserId).run();
+        await env.DB.prepare('UPDATE users SET reset_token = NULL, reset_expires = NULL WHERE id = ?').bind(session.user_id).run();
+        await writeAuditLog(env.DB, session.user_id, 'admin_promotion_verified', { target_user_id: targetUserId });
+        return json({ success: true, message: 'User promoted to admin.' });
       }
 
       // Get trust rating for a user
@@ -2330,6 +2402,13 @@ async function renderLogin() {
   const urlParams = new URLSearchParams(window.location.search);
   const resetToken = urlParams.get('reset');
   if (resetToken) return renderResetPassword(resetToken);
+  const promoteToken = urlParams.get('promote_token');
+  if (promoteToken && authToken) {
+    const res = await api('/admin/verify-promote', { method: 'POST', body: JSON.stringify({ token: promoteToken }) });
+    alert(res.message || res.error || 'Promotion processed');
+    window.history.replaceState({}, '', '/');
+    return renderApp();
+  }
 
   const app = document.getElementById('app');
   app.innerHTML = '';
@@ -2912,7 +2991,13 @@ async function renderLeads(container) {
 }
 
 async function showLeadModal(leadId) {
-  const { lead, messages } = await api('/admin/leads/' + leadId);
+  const data = await api('/admin/leads/' + leadId);
+  const lead = data.lead;
+  const messages = data.messages;
+  const kitten = data.kitten;
+  const goHomeDate = data.goHomeDate;
+  const linkedUser = data.user;
+  const application = data.application;
   const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
 
@@ -2924,6 +3009,41 @@ async function showLeadModal(leadId) {
   html += '<div class="field"><label>Status</label><div class="value">' + badge(lead.status) + '</div></div>';
   html += '</div>';
   html += '<div class="field"><label>Created</label><div class="value">' + esc(lead.created_at) + '</div></div>';
+
+  // Subscription & waitlist info
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">';
+  if (lead.subscribed_newsletter) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#D4EDDA;color:#155724;font-weight:600">Newsletter</span>';
+  if (lead.subscribed_litter_waitlist) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#CCE5FF;color:#004085;font-weight:600">Litter Waitlist</span>';
+  if (linkedUser) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#E2D9F3;color:#4A2D7A;font-weight:600">Portal Account (' + esc(linkedUser.role) + ')</span>';
+  if (application) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (application.status === 'approved' ? '#D4EDDA;color:#155724' : application.status === 'submitted' ? '#FFF3CD;color:#856404' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(application.status) + (application.score ? ' (' + application.score + ')' : '') + '</span>';
+  html += '</div>';
+
+  // Kitten / purchase info
+  if (kitten) {
+    html += '<div style="border:1px solid #D4C5A9;border-radius:8px;padding:12px;margin:12px 0;background:#FFFDF5">';
+    html += '<h3 style="font-size:.9rem;color:#A0522D;margin:0 0 8px">Kitten: ' + esc(kitten.name) + '</h3>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.85rem">';
+    html += '<div><span style="color:#6B5B4B">Litter:</span> ' + esc(kitten.litter_code || '') + '</div>';
+    html += '<div><span style="color:#6B5B4B">Status:</span> ' + badge(kitten.status) + '</div>';
+    html += '<div><span style="color:#6B5B4B">Color:</span> ' + esc(kitten.color || 'TBD') + '</div>';
+    html += '<div><span style="color:#6B5B4B">Sex:</span> ' + esc(kitten.sex || 'TBD') + '</div>';
+    if (kitten.deposit_received_date) html += '<div><span style="color:#6B5B4B">Deposit:</span> $' + (kitten.deposit_amount || 0) + ' on ' + esc(kitten.deposit_received_date) + '</div>';
+    if (kitten.price) html += '<div><span style="color:#6B5B4B">Price:</span> $' + kitten.price + '</div>';
+    if (goHomeDate) html += '<div><span style="color:#6B5B4B">Go-Home:</span> <strong>' + esc(goHomeDate) + '</strong></div>';
+    if (kitten.breeding_rights) html += '<div><span style="font-size:.72rem;padding:2px 6px;border-radius:8px;background:#E2D9F3;color:#4A2D7A;font-weight:600">Breeding Rights</span></div>';
+    html += '</div></div>';
+  }
+
+  // Preferences
+  if (lead.sex_preference || lead.color_preference || lead.eye_color_preference || lead.temperament_preference) {
+    html += '<div style="font-size:.85rem;color:#6B5B4B;margin:4px 0">Preferences: ';
+    var prefs = [];
+    if (lead.sex_preference && lead.sex_preference !== 'no_preference') prefs.push(lead.sex_preference);
+    if (lead.color_preference && lead.color_preference !== 'no_preference') prefs.push(lead.color_preference);
+    if (lead.eye_color_preference && lead.eye_color_preference !== 'no_preference') prefs.push(lead.eye_color_preference);
+    if (lead.temperament_preference && lead.temperament_preference !== 'no_preference') prefs.push(lead.temperament_preference);
+    html += esc(prefs.join(', ') || 'None') + '</div>';
+  }
 
   // Message history
   html += '<h3 style="margin:20px 0 8px">Conversation</h3>';
@@ -3441,6 +3561,7 @@ async function showKittenEditModal(kittenId, kitten) {
     '<div class="field"><label>Balance Due ($)</label><input type="number" id="ekBalanceDue" step="0.01" value="' + (kitten.balance_due != null ? kitten.balance_due : '') + '"></div></div>' +
     '<div class="field"><label>Payment Notes</label><textarea id="ekPaymentNotes" rows="2" style="font-size:.85rem">' + esc(kitten.payment_notes || '') + '</textarea></div>' +
     '<div class="field"><label>Bio (shown on public website)</label><textarea id="ekBio" rows="3" placeholder="Personality, temperament, what makes this kitten special...">' + esc(kitten.bio || '') + '</textarea></div>' +
+    '<div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ekBreedingRights"' + (kitten.breeding_rights ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:#A0522D"> Breeding Rights (skip spay/neuter email)</label></div>' +
     '<div class="field"><label>Admin Notes (private)</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
     ((kitten.status === 'reserved' || kitten.status === 'sold') ? (function() {
       var clItems = [
@@ -3564,7 +3685,8 @@ async function showKittenEditModal(kittenId, kitten) {
       balance_due: document.getElementById('ekBalanceDue').value ? parseFloat(document.getElementById('ekBalanceDue').value) : null,
       payment_notes: document.getElementById('ekPaymentNotes').value || null,
       bio: document.getElementById('ekBio').value,
-      notes: document.getElementById('ekNotes').value
+      notes: document.getElementById('ekNotes').value,
+      breeding_rights: document.getElementById('ekBreedingRights').checked ? 1 : 0
     })});
     bg.remove();
     renderApp();
@@ -4425,11 +4547,16 @@ async function showUserEditModal(user) {
   };
 
   document.getElementById('saveUserBtn').onclick = async () => {
-    await api('/admin/users/' + user.id, { method: 'PUT', body: JSON.stringify({
-      role: document.getElementById('euRole').value,
+    const newRole = document.getElementById('euRole').value;
+    const res = await api('/admin/users/' + user.id, { method: 'PUT', body: JSON.stringify({
+      role: newRole,
       status: document.getElementById('euStatus').value,
       admin_notes: document.getElementById('euNotes').value
     })});
+    if (res.needsVerification) {
+      alert(res.message);
+      return;
+    }
     bg.remove();
     renderApp();
   };

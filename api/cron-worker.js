@@ -75,7 +75,7 @@ export default {
       // Get all sold kittens with their buyer info and go-home dates
       const soldKittens = await db.prepare(`
         SELECT k.id as kitten_id, k.name as kitten_name, k.reserved_by,
-               k.notes as kitten_notes, l.born_date,
+               k.notes as kitten_notes, k.breeding_rights, l.born_date,
                lead.id as lead_id, lead.name as buyer_name, lead.email as buyer_email
         FROM kittens k
         JOIN litters l ON k.litter_id = l.id
@@ -121,6 +121,9 @@ export default {
           // Is it time to send?
           const triggerMs = triggerDate.getTime();
           if (todayMs >= triggerMs) {
+            // Skip spay/neuter email (template 3) if kitten has breeding rights
+            if (schedule.brevo_template_id === 3 && kitten.breeding_rights) continue;
+
             // Send the template email
             const sent = await sendTemplateEmail(
               brevoKey,
