@@ -18,7 +18,7 @@ async function sendEmail(brevoKey, to, subject, body, toName) {
         replyTo: { name: 'Blue Sky Cattery', email: 'kittens@reply.blueskycattery.com' },
         to: [{ email: to, name: toName || to }],
         subject,
-        ...(body.trim().startsWith('<') ? { htmlContent: body } : { textContent: body })
+        textContent: body
       })
     });
     const result = await res.json();

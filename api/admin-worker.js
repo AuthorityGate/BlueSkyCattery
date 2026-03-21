@@ -479,7 +479,7 @@ async function sendEmail(to, subject, body, toName) {
         replyTo: { name: 'Blue Sky Cattery', email: 'kittens@reply.blueskycattery.com' },
         to: [{ email: to, name: toName || to }],
         subject: subject,
-        ...(body.trim().startsWith('<') ? { htmlContent: body } : { textContent: body })
+        textContent: body
       })
     });
     const result = await res.json();
@@ -1137,7 +1137,7 @@ export default {
       if (path === '/api/admin/email-schedules' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const schedules = await env.DB.prepare('SELECT * FROM email_schedules ORDER BY trigger_event ASC, days_after ASC').all();
+        const schedules = await env.DB.prepare('SELECT * FROM email_schedules ORDER BY trigger_type ASC, days_after ASC').all();
         return json({ schedules: schedules.results });
       }
 
@@ -1153,7 +1153,7 @@ export default {
         if (data.days_after !== undefined) { fields.push('days_after = ?'); values.push(data.days_after); }
         if (data.subject !== undefined) { fields.push('subject = ?'); values.push(data.subject); }
         if (data.body_template !== undefined) { fields.push('body_template = ?'); values.push(data.body_template); }
-        fields.push('updated_at = ?'); values.push(now());
+        if (fields.length === 0) return json({ error: 'No fields to update' }, 400);
         values.push(schedId);
         await env.DB.prepare('UPDATE email_schedules SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
         return json({ success: true });
@@ -1167,12 +1167,8 @@ export default {
         const schedule = await env.DB.prepare('SELECT * FROM email_schedules WHERE id = ?').bind(schedId).first();
         if (!schedule) return json({ error: 'Schedule not found' }, 404);
         const adminUser = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(session.user_id).first();
-        const templateBody = schedule.body_template || '(no body template)';
-        const isHtml = templateBody.trim().startsWith('<');
-        const testBody = isHtml
-          ? '<div style="background:#FFF3CD;padding:12px;margin-bottom:16px;border-radius:6px;font-family:sans-serif"><strong>[TEST EMAIL]</strong> Template: ' + schedule.template_name + ' | Trigger: ' + schedule.trigger_event + ' | Days After: ' + schedule.days_after + '</div>' + templateBody
-          : '[TEST EMAIL]\n\nTemplate: ' + schedule.template_name + '\nTrigger: ' + schedule.trigger_event + '\nDays After: ' + schedule.days_after + '\n\n---\n\n' + templateBody;
-        const sent = await sendEmail(adminUser.email, '[TEST] ' + (schedule.subject || schedule.template_name), testBody, 'Admin');
+        const testBody = '[TEST EMAIL]\n\nTemplate: ' + schedule.name + '\nBravo Template ID: ' + (schedule.brevo_template_id || 'N/A') + '\nTrigger: ' + schedule.trigger_type + '\nDays After: ' + schedule.days_after + '\nDescription: ' + (schedule.description || 'N/A');
+        const sent = await sendEmail(adminUser.email, '[TEST] ' + schedule.name, testBody, 'Admin');
         return json({ success: sent, message: sent ? 'Test email sent to ' + adminUser.email : 'Failed to send test email' });
       }
 
@@ -3930,197 +3926,47 @@ async function renderEmails(container) {
   if (!schedules || schedules.length === 0) {
     html += '<p style="color:#6B5B4B;padding:20px;text-align:center">No email schedules configured. Add templates via the database.</p>';
   } else {
+    html += '<table><thead><tr><th>Template</th><th>Brevo ID</th><th>Trigger</th><th>Days After</th><th>Description</th><th>Active</th><th>Actions</th></tr></thead><tbody>';
     schedules.forEach(s => {
-      const isHtml = (s.body_template || '').trim().startsWith('<');
-      html += '<div class="card" style="margin-bottom:16px;border:1px solid #D4C5A9;border-radius:8px;overflow:hidden" data-sched-card="' + s.id + '">';
-
-      // Header row
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#F5EDE0;border-bottom:1px solid #D4C5A9;cursor:pointer" data-sched-toggle="' + s.id + '">';
-      html += '<div><strong>' + esc(s.template_name) + '</strong> <span style="color:#6B5B4B;font-size:.85rem;margin-left:8px">' + esc(s.trigger_event || '') + (s.days_after ? ' +' + s.days_after + 'd' : '') + '</span></div>';
-      html += '<div style="display:flex;align-items:center;gap:12px">';
-      html += '<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:' + (s.active ? '#D4EDDA;color:#155724' : '#F8D7DA;color:#721C24') + '">' + (s.active ? 'Active' : 'Inactive') + '</span>';
-      html += '<span style="font-size:1.1rem;transition:transform .2s" data-sched-arrow="' + s.id + '">&#9660;</span>';
-      html += '</div></div>';
-
-      // Expandable body (collapsed by default)
-      html += '<div style="display:none;padding:16px" data-sched-body="' + s.id + '">';
-
-      // Settings row
-      html += '<div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap;align-items:center">';
-      html += '<div><label style="font-size:.8rem;color:#6B5B4B;display:block;margin-bottom:4px">Days After</label><input type="number" data-sched-days="' + s.id + '" value="' + (s.days_after || 0) + '" style="width:70px;padding:6px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.9rem"></div>';
-      html += '<div><label style="font-size:.8rem;color:#6B5B4B;display:block;margin-bottom:4px">Trigger</label><span style="font-size:.9rem">' + esc(s.trigger_event || '---') + '</span></div>';
-      html += '<div style="display:flex;align-items:center;gap:6px;margin-top:16px"><label class="toggle"><input type="checkbox" data-sched-active="' + s.id + '"' + (s.active ? ' checked' : '') + '><span class="slider"></span></label><span style="font-size:.85rem;color:#6B5B4B">Active</span></div>';
-      html += '</div>';
-
-      // Subject
-      html += '<div style="margin-bottom:12px"><label style="font-size:.8rem;color:#6B5B4B;display:block;margin-bottom:4px">Subject</label>';
-      html += '<input type="text" data-sched-subject="' + s.id + '" value="' + esc(s.subject || '') + '" style="width:100%;padding:8px 10px;border:1px solid #D4C5A9;border-radius:4px;font-size:.9rem;box-sizing:border-box"></div>';
-
-      // Body template - rich text editor
-      html += '<div style="margin-bottom:12px"><label style="font-size:.8rem;color:#6B5B4B;display:block;margin-bottom:4px">Body Template</label>';
-
-      // Toolbar
-      html += '<div style="display:flex;gap:2px;padding:6px 8px;background:#F5EDE0;border:1px solid #D4C5A9;border-bottom:none;border-radius:4px 4px 0 0;flex-wrap:wrap">';
-      html += '<button type="button" data-cmd="bold" title="Bold" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-weight:bold;font-size:.85rem">B</button>';
-      html += '<button type="button" data-cmd="italic" title="Italic" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-style:italic;font-size:.85rem">I</button>';
-      html += '<button type="button" data-cmd="underline" title="Underline" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;text-decoration:underline;font-size:.85rem">U</button>';
-      html += '<span style="width:1px;background:#D4C5A9;margin:0 4px"></span>';
-      html += '<button type="button" data-cmd="insertUnorderedList" title="Bullet List" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-size:.85rem">&#8226; List</button>';
-      html += '<button type="button" data-cmd="insertOrderedList" title="Numbered List" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-size:.85rem">1. List</button>';
-      html += '<span style="width:1px;background:#D4C5A9;margin:0 4px"></span>';
-      html += '<button type="button" data-cmd="justifyLeft" title="Align Left" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-size:.85rem">&#8676;</button>';
-      html += '<button type="button" data-cmd="justifyCenter" title="Align Center" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-size:.85rem">&#8596;</button>';
-      html += '<span style="width:1px;background:#D4C5A9;margin:0 4px"></span>';
-      html += '<button type="button" data-cmd="createLink" title="Insert Link" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-size:.85rem">&#128279; Link</button>';
-      html += '<select data-cmd="fontSize" title="Font Size" style="padding:4px;border:1px solid #D4C5A9;border-radius:3px;font-size:.85rem"><option value="">Size</option><option value="1">Small</option><option value="3">Normal</option><option value="4">Large</option><option value="5">X-Large</option></select>';
-      html += '<select data-cmd="foreColor" title="Text Color" style="padding:4px;border:1px solid #D4C5A9;border-radius:3px;font-size:.85rem"><option value="">Color</option><option value="#000000">Black</option><option value="#A0522D">Brown</option><option value="#6B5B4B">Muted</option><option value="#155724">Green</option><option value="#721C24">Red</option><option value="#004085">Blue</option></select>';
-      html += '<span style="flex:1"></span>';
-      html += '<button type="button" data-sched-htmltoggle="' + s.id + '" title="Toggle HTML source" style="padding:4px 8px;border:1px solid #D4C5A9;background:#fff;border-radius:3px;cursor:pointer;font-size:.75rem;font-family:monospace">&lt;/&gt;</button>';
-      html += '</div>';
-
-      // Editable area
-      html += '<div contenteditable="true" data-sched-editor="' + s.id + '" style="min-height:200px;max-height:400px;overflow-y:auto;padding:12px;border:1px solid #D4C5A9;border-radius:0 0 4px 4px;font-size:.9rem;line-height:1.5;background:#fff;outline:none">';
-      if (isHtml) {
-        html += s.body_template;
-      } else {
-        html += esc(s.body_template || '').replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
-      }
-      html += '</div>';
-
-      // Hidden HTML source textarea
-      html += '<textarea data-sched-source="' + s.id + '" style="display:none;width:100%;min-height:200px;max-height:400px;padding:12px;border:1px solid #D4C5A9;border-radius:0 0 4px 4px;font-size:.85rem;font-family:monospace;line-height:1.4;background:#FFFDF5;box-sizing:border-box;resize:vertical"></textarea>';
-
-      html += '</div>';
-
-      // Variable hint
-      html += '<div style="font-size:.75rem;color:#6B5B4B;margin-bottom:12px">Variables: <code style="background:#F5EDE0;padding:1px 4px;border-radius:3px">{{kitten_name}}</code> <code style="background:#F5EDE0;padding:1px 4px;border-radius:3px">{{buyer_first_name}}</code> <code style="background:#F5EDE0;padding:1px 4px;border-radius:3px">{{go_home_date}}</code></div>';
-
-      // Action buttons
-      html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-      html += '<button class="btn btn-primary btn-sm" data-sched-save="' + s.id + '">Save Changes</button>';
-      html += '<button class="btn btn-info btn-sm" data-sched-test="' + s.id + '">Send Test</button>';
-      html += '<button class="btn btn-outline btn-sm" data-sched-preview="' + s.id + '">Preview</button>';
-      html += '</div>';
-
-      html += '</div>'; // end body
-      html += '</div>'; // end card
+      html += '<tr>';
+      html += '<td><strong>' + esc(s.name) + '</strong></td>';
+      html += '<td>' + (s.brevo_template_id || '---') + '</td>';
+      html += '<td>' + esc(s.trigger_type || '---') + '</td>';
+      html += '<td><input type="number" data-sched-days="' + s.id + '" value="' + (s.days_after || 0) + '" style="width:60px;padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.85rem"></td>';
+      html += '<td style="font-size:.85rem;color:#6B5B4B">' + esc(s.description || '') + '</td>';
+      html += '<td><label class="toggle"><input type="checkbox" data-sched-active="' + s.id + '"' + (s.active ? ' checked' : '') + '><span class="slider"></span></label></td>';
+      html += '<td><button class="btn btn-outline btn-sm" data-sched-save="' + s.id + '">Save</button> <button class="btn btn-info btn-sm" data-sched-test="' + s.id + '">Send Test</button></td>';
+      html += '</tr>';
     });
+    html += '</tbody></table>';
   }
 
   panel.innerHTML = html;
   container.appendChild(panel);
 
-  // Toggle expand/collapse
-  panel.querySelectorAll('[data-sched-toggle]').forEach(header => {
-    header.onclick = () => {
-      const id = header.getAttribute('data-sched-toggle');
-      const body = panel.querySelector('[data-sched-body="' + id + '"]');
-      const arrow = panel.querySelector('[data-sched-arrow="' + id + '"]');
-      const isOpen = body.style.display !== 'none';
-      body.style.display = isOpen ? 'none' : 'block';
-      arrow.style.transform = isOpen ? '' : 'rotate(180deg)';
-    };
-  });
-
-  // Toolbar commands
-  panel.querySelectorAll('[data-cmd]').forEach(btn => {
-    const handler = (e) => {
-      e.preventDefault();
-      const cmd = btn.getAttribute('data-cmd');
-      if (cmd === 'createLink') {
-        const url = prompt('Enter URL:');
-        if (url) document.execCommand('createLink', false, url);
-      } else if (cmd === 'fontSize' || cmd === 'foreColor') {
-        const val = btn.value;
-        if (val) document.execCommand(cmd, false, val);
-        btn.selectedIndex = 0;
-      } else {
-        document.execCommand(cmd, false, null);
-      }
-    };
-    if (btn.tagName === 'SELECT') { btn.onchange = handler; } else { btn.onclick = handler; }
-  });
-
-  // HTML source toggle
-  panel.querySelectorAll('[data-sched-htmltoggle]').forEach(btn => {
-    btn.onclick = () => {
-      const id = btn.getAttribute('data-sched-htmltoggle');
-      const editor = panel.querySelector('[data-sched-editor="' + id + '"]');
-      const source = panel.querySelector('[data-sched-source="' + id + '"]');
-      if (source.style.display === 'none') {
-        source.value = editor.innerHTML;
-        source.style.display = 'block';
-        editor.style.display = 'none';
-        btn.style.background = '#D4C5A9';
-      } else {
-        editor.innerHTML = source.value;
-        source.style.display = 'none';
-        editor.style.display = 'block';
-        btn.style.background = '#fff';
-      }
-    };
-  });
-
-  // Preview
-  panel.querySelectorAll('[data-sched-preview]').forEach(btn => {
-    btn.onclick = () => {
-      const id = btn.getAttribute('data-sched-preview');
-      const editor = panel.querySelector('[data-sched-editor="' + id + '"]');
-      const source = panel.querySelector('[data-sched-source="' + id + '"]');
-      const subjectInput = panel.querySelector('[data-sched-subject="' + id + '"]');
-      const bodyHtml = source.style.display !== 'none' ? source.value : editor.innerHTML;
-      const previewWin = window.open('', '_blank', 'width=700,height=600');
-      previewWin.document.write('<html><head><title>Email Preview</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:20px auto;padding:20px;color:#333}h2{color:#6B5B4B;border-bottom:1px solid #D4C5A9;padding-bottom:8px}</style></head><body>');
-      previewWin.document.write('<h2>Subject: ' + (subjectInput.value || '(no subject)') + '</h2>');
-      previewWin.document.write(bodyHtml);
-      previewWin.document.write('</body></html>');
-      previewWin.document.close();
-    };
-  });
-
-  // Save
+  // Attach handlers
   panel.querySelectorAll('[data-sched-save]').forEach(btn => {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-sched-save');
       const daysInput = panel.querySelector('[data-sched-days="' + id + '"]');
       const activeInput = panel.querySelector('[data-sched-active="' + id + '"]');
-      const subjectInput = panel.querySelector('[data-sched-subject="' + id + '"]');
-      const editor = panel.querySelector('[data-sched-editor="' + id + '"]');
-      const source = panel.querySelector('[data-sched-source="' + id + '"]');
-      const bodyHtml = source.style.display !== 'none' ? source.value : editor.innerHTML;
-      btn.disabled = true; btn.textContent = 'Saving...';
       await api('/admin/email-schedules/' + id, { method: 'PUT', body: JSON.stringify({
         days_after: parseInt(daysInput.value) || 0,
-        active: activeInput.checked,
-        subject: subjectInput.value,
-        body_template: bodyHtml
+        active: activeInput.checked
       })});
-      btn.disabled = false; btn.textContent = 'Save Changes';
-      alert('Template saved.');
+      alert('Schedule updated.');
     };
   });
 
-  // Send Test
   panel.querySelectorAll('[data-sched-test]').forEach(btn => {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-sched-test');
-      // Save first so the test reflects current edits
-      const daysInput = panel.querySelector('[data-sched-days="' + id + '"]');
-      const activeInput = panel.querySelector('[data-sched-active="' + id + '"]');
-      const subjectInput = panel.querySelector('[data-sched-subject="' + id + '"]');
-      const editor = panel.querySelector('[data-sched-editor="' + id + '"]');
-      const source = panel.querySelector('[data-sched-source="' + id + '"]');
-      const bodyHtml = source.style.display !== 'none' ? source.value : editor.innerHTML;
-      btn.disabled = true; btn.textContent = 'Saving & Sending...';
-      await api('/admin/email-schedules/' + id, { method: 'PUT', body: JSON.stringify({
-        days_after: parseInt(daysInput.value) || 0,
-        active: activeInput.checked,
-        subject: subjectInput.value,
-        body_template: bodyHtml
-      })});
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
       const res = await api('/admin/email-schedules/test/' + id, { method: 'POST' });
       alert(res.message || (res.success ? 'Sent!' : 'Failed'));
-      btn.disabled = false; btn.textContent = 'Send Test';
+      btn.disabled = false;
+      btn.textContent = 'Send Test';
     };
   });
 }
