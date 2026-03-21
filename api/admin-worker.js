@@ -1248,6 +1248,8 @@ export default {
           });
           const result = await res.json();
           if (result.messageId) {
+            await env.DB.prepare('INSERT INTO email_sent_log (kitten_id, lead_id, schedule_id, template_id, recipient_email, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)')
+              .bind(null, lead_id || null, schedule.id, schedule.brevo_template_id, toEmail, now(), 'sent').run();
             await writeAuditLog(env.DB, session.user_id, 'manual_email', 'email', schedule.id, schedule.name + ' to ' + toEmail);
             return json({ success: true, message: schedule.name + ' sent to ' + toEmail });
           }
