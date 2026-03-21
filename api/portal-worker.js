@@ -1030,7 +1030,7 @@ export default {
           return json({ error: 'Email and password required' }, 400);
         }
 
-        const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
+        const user = await env.DB.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND status = ?').bind(email, 'active').first();
         if (!user) {
           return json({ error: 'Invalid credentials' }, 401);
         }
@@ -1062,7 +1062,7 @@ export default {
       if (path === '/api/auth/forgot-password' && method === 'POST') {
         const { email } = await parseBody(request);
         if (!email) return json({ error: 'Email required' }, 400);
-        const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
+        const user = await env.DB.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND status = ?').bind(email, 'active').first();
         if (!user) {
           // Don't reveal whether email exists
           return json({ success: true, message: 'If an account exists with that email, a reset link has been sent.' });
@@ -1168,7 +1168,7 @@ export default {
         const { email } = await parseBody(request);
         if (!email) return json({ error: 'Email required' }, 400);
 
-        const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
+        const user = await env.DB.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND status = ?').bind(email, 'active').first();
         if (!user || user.email_verified === 1) {
           return json({ success: true, message: 'If an unverified account exists, a new verification email has been sent.' });
         }

@@ -675,7 +675,7 @@ export default {
           return json({ error: 'Email and password required' }, 400);
         }
 
-        const user = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND status = ?').bind(email, 'active').first();
+        const user = await env.DB.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND status = ?').bind(email, 'active').first();
         if (!user) {
           return json({ error: 'Invalid credentials' }, 401);
         }
