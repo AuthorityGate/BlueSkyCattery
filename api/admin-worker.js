@@ -733,17 +733,8 @@ export default {
         // Get application
         const application = lead ? await env.DB.prepare('SELECT id, status, score, created_at FROM applications WHERE LOWER(email) = LOWER(?) ORDER BY created_at DESC LIMIT 1').bind(lead.email).first() : null;
 
-        // Go-home date: use explicit field, fall back to birth date + 14 weeks
-        let goHomeDate = null;
-        if (kitten) {
-          if (kitten.go_home_date) {
-            goHomeDate = kitten.go_home_date;
-          } else if (kitten.born_date) {
-            const gd = new Date(kitten.born_date);
-            gd.setDate(gd.getDate() + 98);
-            goHomeDate = gd.toISOString().slice(0, 10);
-          }
-        }
+        // Go-home date: admin-entered only
+        const goHomeDate = kitten ? (kitten.go_home_date || null) : null;
 
         return json({ lead, messages: messages.results, kitten, goHomeDate, user, application });
       }
@@ -1190,16 +1181,8 @@ export default {
 
         for (const kitten of soldKittens.results) {
           if (!kitten.buyer_email) continue;
-          let goHomeDate = null;
-          if (kitten.go_home_date) {
-            goHomeDate = new Date(kitten.go_home_date);
-          } else if (kitten.notes && kitten.notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
-            goHomeDate = new Date(kitten.notes.match(/(\d{4}-\d{2}-\d{2})/)[1]);
-          } else if (kitten.born_date) {
-            goHomeDate = new Date(kitten.born_date);
-            goHomeDate.setDate(goHomeDate.getDate() + 98);
-          }
-          if (!goHomeDate) continue;
+          if (!kitten.go_home_date) continue;
+          const goHomeDate = new Date(kitten.go_home_date);
           const birthdayDate = kitten.born_date ? new Date(kitten.born_date) : null;
 
           for (const sched of schedules.results) {

@@ -88,17 +88,9 @@ export default {
       for (const kitten of soldKittens.results) {
         if (!kitten.buyer_email) continue;
 
-        // Determine go-home date (explicit field, notes, or litter born_date + 14 weeks)
-        let goHomeDate = null;
-        if (kitten.go_home_date) {
-          goHomeDate = new Date(kitten.go_home_date);
-        } else if (kitten.kitten_notes && kitten.kitten_notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
-          goHomeDate = new Date(kitten.kitten_notes.match(/(\d{4}-\d{2}-\d{2})/)[1]);
-        } else if (kitten.born_date) {
-          goHomeDate = new Date(kitten.born_date);
-          goHomeDate.setDate(goHomeDate.getDate() + 98); // 14 weeks
-        }
-        if (!goHomeDate) continue;
+        // Go-home date must be explicitly set by admin
+        if (!kitten.go_home_date) continue;
+        const goHomeDate = new Date(kitten.go_home_date);
 
         const birthdayDate = kitten.born_date ? new Date(kitten.born_date) : null;
 
