@@ -719,11 +719,12 @@ export default {
         const lead = await env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(leadId).first();
         const messages = await env.DB.prepare('SELECT * FROM messages WHERE lead_id = ? ORDER BY created_at ASC').bind(leadId).all();
 
-        // Get linked kitten (purchased)
+        // Get linked kitten (purchased) - try email, then lead_id, then name
         let kitten = null;
         if (lead) {
           kitten = await env.DB.prepare("SELECT k.*, l.born_date, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE LOWER(k.reserved_by) = LOWER(?) AND k.status IN ('reserved','sold')").bind(lead.email).first();
           if (!kitten) kitten = await env.DB.prepare("SELECT k.*, l.born_date, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.reserved_lead_id = ? AND k.status IN ('reserved','sold')").bind(leadId).first();
+          if (!kitten) kitten = await env.DB.prepare("SELECT k.*, l.born_date, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE LOWER(k.reserved_by) = LOWER(?) AND k.status IN ('reserved','sold')").bind(lead.name).first();
         }
 
         // Get linked user account
@@ -732,11 +733,11 @@ export default {
         // Get application
         const application = lead ? await env.DB.prepare('SELECT id, status, score, created_at FROM applications WHERE LOWER(email) = LOWER(?) ORDER BY created_at DESC LIMIT 1').bind(lead.email).first() : null;
 
-        // Calculate go-home date if kitten exists
+        // Go-home date: use explicit field, fall back to birth date + 14 weeks
         let goHomeDate = null;
         if (kitten) {
-          if (kitten.notes && kitten.notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
-            goHomeDate = kitten.notes.match(/(\d{4}-\d{2}-\d{2})/)[1];
+          if (kitten.go_home_date) {
+            goHomeDate = kitten.go_home_date;
           } else if (kitten.born_date) {
             const gd = new Date(kitten.born_date);
             gd.setDate(gd.getDate() + 98);
@@ -973,6 +974,10 @@ export default {
         if (data.payment_notes !== undefined) { fields.push('payment_notes = ?'); values.push(data.payment_notes); }
         if (data.bio !== undefined) { fields.push('bio = ?'); values.push(data.bio); }
         if (data.breeding_rights !== undefined) { fields.push('breeding_rights = ?'); values.push(data.breeding_rights ? 1 : 0); }
+        if (data.go_home_date !== undefined) { fields.push('go_home_date = ?'); values.push(data.go_home_date); }
+        if (data.sold_date !== undefined) { fields.push('sold_date = ?'); values.push(data.sold_date); }
+        // Auto-set sold_date when status changes to sold
+        if (data.status === 'sold' && !data.sold_date) { fields.push('sold_date = ?'); values.push(now().slice(0, 10)); }
         fields.push('updated_at = ?'); values.push(now());
         values.push(kittenId);
         await env.DB.prepare('UPDATE kittens SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
@@ -1171,7 +1176,8 @@ export default {
         // Get sold kittens for upcoming calculation
         const soldKittens = await env.DB.prepare(`
           SELECT k.id as kitten_id, k.name as kitten_name, k.reserved_by, k.notes,
-                 l.born_date, lead.name as buyer_name, lead.email as buyer_email
+                 k.go_home_date, k.breeding_rights, l.born_date,
+                 lead.name as buyer_name, lead.email as buyer_email
           FROM kittens k JOIN litters l ON k.litter_id = l.id
           LEFT JOIN leads lead ON LOWER(lead.email) = LOWER(k.reserved_by)
           WHERE k.status = 'sold' AND k.reserved_by IS NOT NULL
@@ -1185,7 +1191,9 @@ export default {
         for (const kitten of soldKittens.results) {
           if (!kitten.buyer_email) continue;
           let goHomeDate = null;
-          if (kitten.notes && kitten.notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
+          if (kitten.go_home_date) {
+            goHomeDate = new Date(kitten.go_home_date);
+          } else if (kitten.notes && kitten.notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
             goHomeDate = new Date(kitten.notes.match(/(\d{4}-\d{2}-\d{2})/)[1]);
           } else if (kitten.born_date) {
             goHomeDate = new Date(kitten.born_date);
@@ -1197,6 +1205,7 @@ export default {
           for (const sched of schedules.results) {
             if (!sched.active) continue;
             if (sentSet.has(kitten.kitten_id + '-' + sched.id)) continue;
+            if (sched.brevo_template_id === 3 && kitten.breeding_rights) continue;
             let triggerDate = null;
             if (sched.trigger_type === 'go_home') {
               triggerDate = new Date(goHomeDate);
@@ -3561,6 +3570,9 @@ async function showKittenEditModal(kittenId, kitten) {
     '<div class="field"><label>Balance Due ($)</label><input type="number" id="ekBalanceDue" step="0.01" value="' + (kitten.balance_due != null ? kitten.balance_due : '') + '"></div></div>' +
     '<div class="field"><label>Payment Notes</label><textarea id="ekPaymentNotes" rows="2" style="font-size:.85rem">' + esc(kitten.payment_notes || '') + '</textarea></div>' +
     '<div class="field"><label>Bio (shown on public website)</label><textarea id="ekBio" rows="3" placeholder="Personality, temperament, what makes this kitten special...">' + esc(kitten.bio || '') + '</textarea></div>' +
+    '<div class="form-grid">' +
+    '<div class="field"><label>Sold Date</label><input type="date" id="ekSoldDate" value="' + esc(kitten.sold_date || '') + '"></div>' +
+    '<div class="field"><label>Go-Home Date</label><input type="date" id="ekGoHomeDate" value="' + esc(kitten.go_home_date || '') + '"></div></div>' +
     '<div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ekBreedingRights"' + (kitten.breeding_rights ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:#A0522D"> Breeding Rights (skip spay/neuter email)</label></div>' +
     '<div class="field"><label>Admin Notes (private)</label><textarea id="ekNotes" rows="2">' + esc(kitten.notes || '') + '</textarea></div>' +
     ((kitten.status === 'reserved' || kitten.status === 'sold') ? (function() {
@@ -3686,7 +3698,9 @@ async function showKittenEditModal(kittenId, kitten) {
       payment_notes: document.getElementById('ekPaymentNotes').value || null,
       bio: document.getElementById('ekBio').value,
       notes: document.getElementById('ekNotes').value,
-      breeding_rights: document.getElementById('ekBreedingRights').checked ? 1 : 0
+      breeding_rights: document.getElementById('ekBreedingRights').checked ? 1 : 0,
+      sold_date: document.getElementById('ekSoldDate').value || null,
+      go_home_date: document.getElementById('ekGoHomeDate').value || null
     })});
     bg.remove();
     renderApp();

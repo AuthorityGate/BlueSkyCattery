@@ -75,7 +75,7 @@ export default {
       // Get all sold kittens with their buyer info and go-home dates
       const soldKittens = await db.prepare(`
         SELECT k.id as kitten_id, k.name as kitten_name, k.reserved_by,
-               k.notes as kitten_notes, k.breeding_rights, l.born_date,
+               k.notes as kitten_notes, k.breeding_rights, k.go_home_date, l.born_date,
                lead.id as lead_id, lead.name as buyer_name, lead.email as buyer_email
         FROM kittens k
         JOIN litters l ON k.litter_id = l.id
@@ -88,9 +88,11 @@ export default {
       for (const kitten of soldKittens.results) {
         if (!kitten.buyer_email) continue;
 
-        // Determine go-home date (from kitten notes or litter born_date + 14 weeks)
+        // Determine go-home date (explicit field, notes, or litter born_date + 14 weeks)
         let goHomeDate = null;
-        if (kitten.kitten_notes && kitten.kitten_notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
+        if (kitten.go_home_date) {
+          goHomeDate = new Date(kitten.go_home_date);
+        } else if (kitten.kitten_notes && kitten.kitten_notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
           goHomeDate = new Date(kitten.kitten_notes.match(/(\d{4}-\d{2}-\d{2})/)[1]);
         } else if (kitten.born_date) {
           goHomeDate = new Date(kitten.born_date);

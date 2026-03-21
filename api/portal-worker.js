@@ -811,9 +811,14 @@ export default {
 
         // Create or update lead in D1
         const existing = await env.DB.prepare('SELECT id FROM leads WHERE email = ?').bind(email).first();
+        const subNewsletter = (type === 'newsletter' || type === 'both') ? 1 : 0;
+        const subWaitlist = (type === 'waitlist' || type === 'both') ? 1 : 0;
+
         if (existing) {
           const updates = ['updated_at = ?'];
           const vals = [now()];
+          if (subNewsletter) { updates.push('subscribed_newsletter = 1'); }
+          if (subWaitlist) { updates.push('subscribed_litter_waitlist = 1'); }
           if (sex_preference) { updates.push('sex_preference = ?'); vals.push(sex_preference); }
           if (color_preference) { updates.push('color_preference = ?'); vals.push(color_preference); }
           if (temperament_preference) { updates.push('temperament_preference = ?'); vals.push(temperament_preference); }
@@ -822,8 +827,8 @@ export default {
           vals.push(existing.id);
           await env.DB.prepare('UPDATE leads SET ' + updates.join(', ') + ' WHERE id = ?').bind(...vals).run();
         } else {
-          await env.DB.prepare('INSERT INTO leads (name, email, source, status, sex_preference, color_preference, temperament_preference, eye_color_preference, other_preference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(name || email, email, 'signup_' + type, 'subscribed', sex_preference || null, color_preference || null, temperament_preference || null, eye_color_preference || null, other_preference || null, now(), now()).run();
+          await env.DB.prepare('INSERT INTO leads (name, email, source, status, subscribed_newsletter, subscribed_litter_waitlist, sex_preference, color_preference, temperament_preference, eye_color_preference, other_preference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(name || email, email, 'signup_' + type, 'subscribed', subNewsletter, subWaitlist, sex_preference || null, color_preference || null, temperament_preference || null, eye_color_preference || null, other_preference || null, now(), now()).run();
         }
 
         return json({ success: true, message: 'Signed up successfully!' });
