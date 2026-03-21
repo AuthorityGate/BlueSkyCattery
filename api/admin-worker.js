@@ -1133,12 +1133,71 @@ export default {
       // ADMIN: EMAIL SCHEDULES
       // =====================
 
-      // List email schedules
-      if (path === '/api/admin/email-schedules' && method === 'GET') {
+      // Email dashboard: schedules, sent log, upcoming, recipients
+      if (path === '/api/admin/email-dashboard' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
+
         const schedules = await env.DB.prepare('SELECT * FROM email_schedules ORDER BY trigger_type ASC, days_after ASC').all();
-        return json({ schedules: schedules.results });
+        const sentLog = await env.DB.prepare('SELECT * FROM email_sent_log ORDER BY sent_at DESC LIMIT 50').all();
+
+        // Get sold kittens for upcoming calculation
+        const soldKittens = await env.DB.prepare(`
+          SELECT k.id as kitten_id, k.name as kitten_name, k.reserved_by, k.notes,
+                 l.born_date, lead.name as buyer_name, lead.email as buyer_email
+          FROM kittens k JOIN litters l ON k.litter_id = l.id
+          LEFT JOIN leads lead ON LOWER(lead.email) = LOWER(k.reserved_by)
+          WHERE k.status = 'sold' AND k.reserved_by IS NOT NULL
+        `).all();
+
+        // Build upcoming emails
+        const upcoming = [];
+        const todayMs = Date.now();
+        const sentSet = new Set(sentLog.results.map(r => r.kitten_id + '-' + r.schedule_id));
+
+        for (const kitten of soldKittens.results) {
+          if (!kitten.buyer_email) continue;
+          let goHomeDate = null;
+          if (kitten.notes && kitten.notes.match(/go.?home.*(\d{4}-\d{2}-\d{2})/i)) {
+            goHomeDate = new Date(kitten.notes.match(/(\d{4}-\d{2}-\d{2})/)[1]);
+          } else if (kitten.born_date) {
+            goHomeDate = new Date(kitten.born_date);
+            goHomeDate.setDate(goHomeDate.getDate() + 98);
+          }
+          if (!goHomeDate) continue;
+          const birthdayDate = kitten.born_date ? new Date(kitten.born_date) : null;
+
+          for (const sched of schedules.results) {
+            if (!sched.active) continue;
+            if (sentSet.has(kitten.kitten_id + '-' + sched.id)) continue;
+            let triggerDate = null;
+            if (sched.trigger_type === 'go_home') {
+              triggerDate = new Date(goHomeDate);
+              triggerDate.setDate(triggerDate.getDate() + sched.days_after);
+            } else if (sched.trigger_type === 'birthday' && birthdayDate) {
+              triggerDate = new Date(birthdayDate);
+              triggerDate.setFullYear(triggerDate.getFullYear() + 1);
+            }
+            if (!triggerDate) continue;
+            upcoming.push({
+              kitten_name: kitten.kitten_name,
+              buyer_name: kitten.buyer_name,
+              buyer_email: kitten.buyer_email,
+              template: sched.name,
+              trigger_type: sched.trigger_type,
+              send_date: triggerDate.toISOString().slice(0, 10),
+              days_until: Math.ceil((triggerDate.getTime() - todayMs) / 86400000),
+              schedule_id: sched.id,
+              kitten_id: kitten.kitten_id
+            });
+          }
+        }
+        upcoming.sort((a, b) => a.send_date.localeCompare(b.send_date));
+
+        // Get all leads for manual send dropdown
+        const leads = await env.DB.prepare('SELECT id, name, email FROM leads ORDER BY name ASC').all();
+
+        return json({ schedules: schedules.results, sentLog: sentLog.results, upcoming, leads: leads.results });
       }
 
       // Update email schedule
@@ -1151,25 +1210,51 @@ export default {
         const values = [];
         if (data.active !== undefined) { fields.push('active = ?'); values.push(data.active ? 1 : 0); }
         if (data.days_after !== undefined) { fields.push('days_after = ?'); values.push(data.days_after); }
-        if (data.subject !== undefined) { fields.push('subject = ?'); values.push(data.subject); }
-        if (data.body_template !== undefined) { fields.push('body_template = ?'); values.push(data.body_template); }
         if (fields.length === 0) return json({ error: 'No fields to update' }, 400);
         values.push(schedId);
         await env.DB.prepare('UPDATE email_schedules SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
         return json({ success: true });
       }
 
-      // Send test email from template
-      if (path.match(/^\/api\/admin\/email-schedules\/test\/\d+$/) && method === 'POST') {
+      // Send any Brevo template to any recipient
+      if (path === '/api/admin/email-send-template' && method === 'POST') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const schedId = path.split('/').pop();
-        const schedule = await env.DB.prepare('SELECT * FROM email_schedules WHERE id = ?').bind(schedId).first();
-        if (!schedule) return json({ error: 'Schedule not found' }, 404);
-        const adminUser = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(session.user_id).first();
-        const testBody = '[TEST EMAIL]\n\nTemplate: ' + schedule.name + '\nBravo Template ID: ' + (schedule.brevo_template_id || 'N/A') + '\nTrigger: ' + schedule.trigger_type + '\nDays After: ' + schedule.days_after + '\nDescription: ' + (schedule.description || 'N/A');
-        const sent = await sendEmail(adminUser.email, '[TEST] ' + schedule.name, testBody, 'Admin');
-        return json({ success: sent, message: sent ? 'Test email sent to ' + adminUser.email : 'Failed to send test email' });
+        const { schedule_id, lead_id, email, name } = await request.json();
+        if (!schedule_id) return json({ error: 'Template required' }, 400);
+
+        const schedule = await env.DB.prepare('SELECT * FROM email_schedules WHERE id = ?').bind(schedule_id).first();
+        if (!schedule) return json({ error: 'Template not found' }, 404);
+
+        let toEmail = email, toName = name || email;
+        if (lead_id) {
+          const lead = await env.DB.prepare('SELECT name, email FROM leads WHERE id = ?').bind(lead_id).first();
+          if (!lead) return json({ error: 'Lead not found' }, 404);
+          toEmail = lead.email;
+          toName = lead.name;
+        }
+        if (!toEmail) return json({ error: 'Recipient email required' }, 400);
+
+        // Send via Brevo template
+        try {
+          const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: { 'api-key': _brevoKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              templateId: schedule.brevo_template_id,
+              to: [{ email: toEmail, name: toName }],
+              params: { KITTEN_NAME: name || 'your kitten', FIRSTNAME: (toName || '').split(' ')[0] || 'there' }
+            })
+          });
+          const result = await res.json();
+          if (result.messageId) {
+            await writeAuditLog(env.DB, session.user_id, 'manual_email', 'email', schedule.id, schedule.name + ' to ' + toEmail);
+            return json({ success: true, message: schedule.name + ' sent to ' + toEmail });
+          }
+          return json({ error: 'Brevo error: ' + JSON.stringify(result) }, 400);
+        } catch (e) {
+          return json({ error: 'Send failed: ' + e.message }, 500);
+        }
       }
 
       // =====================
@@ -3918,33 +4003,100 @@ async function renderSettings(container) {
 // ---- Emails ----
 
 async function renderEmails(container) {
-  const { schedules } = await api('/admin/email-schedules');
+  const data = await api('/admin/email-dashboard');
   const panel = el('div', { class: 'panel active' });
+  const schedules = data.schedules || [];
+  const sentLog = data.sentLog || [];
+  const upcoming = data.upcoming || [];
+  const leads = data.leads || [];
 
-  let html = '<h2 style="margin:20px 0 12px">Email Schedules</h2>';
+  let html = '';
 
-  if (!schedules || schedules.length === 0) {
-    html += '<p style="color:#6B5B4B;padding:20px;text-align:center">No email schedules configured. Add templates via the database.</p>';
+  // ---- Manual Send Section ----
+  html += '<h2 style="margin:20px 0 12px">Send Email</h2>';
+  html += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:24px;padding:16px;background:#F5EDE0;border-radius:8px">';
+  html += '<div style="flex:1;min-width:200px"><label style="font-size:.8rem;color:#6B5B4B;display:block;margin-bottom:4px">Template</label>';
+  html += '<select id="sendTemplate" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.9rem"><option value="">Select template...</option>';
+  schedules.forEach(s => { html += '<option value="' + s.id + '">' + esc(s.name) + ' (Brevo #' + s.brevo_template_id + ')</option>'; });
+  html += '</select></div>';
+  html += '<div style="flex:1;min-width:200px"><label style="font-size:.8rem;color:#6B5B4B;display:block;margin-bottom:4px">Recipient</label>';
+  html += '<select id="sendRecipient" style="width:100%;padding:8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.9rem"><option value="">Select recipient...</option>';
+  leads.forEach(l => { html += '<option value="' + l.id + '">' + esc(l.name) + ' (' + esc(l.email) + ')</option>'; });
+  html += '</select></div>';
+  html += '<div><button class="btn btn-primary" id="sendEmailBtn">Send</button></div>';
+  html += '</div>';
+
+  // ---- Upcoming Emails ----
+  html += '<h2 style="margin:20px 0 12px">Upcoming Emails <span style="font-size:.85rem;color:#6B5B4B;font-weight:normal">(' + upcoming.length + ')</span></h2>';
+  if (upcoming.length === 0) {
+    html += '<p style="color:#6B5B4B;padding:12px;text-align:center">No upcoming scheduled emails. Sold kittens with valid buyer emails will appear here.</p>';
   } else {
-    html += '<table><thead><tr><th>Template</th><th>Brevo ID</th><th>Trigger</th><th>Days After</th><th>Description</th><th>Active</th><th>Actions</th></tr></thead><tbody>';
-    schedules.forEach(s => {
-      html += '<tr>';
-      html += '<td><strong>' + esc(s.name) + '</strong></td>';
-      html += '<td>' + (s.brevo_template_id || '---') + '</td>';
-      html += '<td>' + esc(s.trigger_type || '---') + '</td>';
-      html += '<td><input type="number" data-sched-days="' + s.id + '" value="' + (s.days_after || 0) + '" style="width:60px;padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.85rem"></td>';
-      html += '<td style="font-size:.85rem;color:#6B5B4B">' + esc(s.description || '') + '</td>';
-      html += '<td><label class="toggle"><input type="checkbox" data-sched-active="' + s.id + '"' + (s.active ? ' checked' : '') + '><span class="slider"></span></label></td>';
-      html += '<td><button class="btn btn-outline btn-sm" data-sched-save="' + s.id + '">Save</button> <button class="btn btn-info btn-sm" data-sched-test="' + s.id + '">Send Test</button></td>';
+    html += '<table><thead><tr><th>Send Date</th><th>Days</th><th>Template</th><th>Kitten</th><th>Recipient</th></tr></thead><tbody>';
+    upcoming.slice(0, 30).forEach(u => {
+      const isPast = u.days_until <= 0;
+      const rowStyle = isPast ? ' style="background:#FFF3CD"' : '';
+      html += '<tr' + rowStyle + '>';
+      html += '<td>' + esc(u.send_date) + '</td>';
+      html += '<td>' + (isPast ? '<strong style="color:#721C24">overdue</strong>' : u.days_until + 'd') + '</td>';
+      html += '<td>' + esc(u.template) + '</td>';
+      html += '<td>' + esc(u.kitten_name) + '</td>';
+      html += '<td>' + esc(u.buyer_name || '') + ' <span style="color:#6B5B4B;font-size:.85rem">' + esc(u.buyer_email) + '</span></td>';
       html += '</tr>';
     });
     html += '</tbody></table>';
   }
 
+  // ---- Past Emails ----
+  html += '<h2 style="margin:20px 0 12px">Sent Emails <span style="font-size:.85rem;color:#6B5B4B;font-weight:normal">(' + sentLog.length + ')</span></h2>';
+  if (sentLog.length === 0) {
+    html += '<p style="color:#6B5B4B;padding:12px;text-align:center">No emails sent yet.</p>';
+  } else {
+    html += '<table><thead><tr><th>Date</th><th>Template</th><th>Recipient</th><th>Status</th></tr></thead><tbody>';
+    sentLog.forEach(s => {
+      const sched = schedules.find(sc => sc.id === s.schedule_id);
+      html += '<tr>';
+      html += '<td style="font-size:.85rem">' + (s.sent_at || '').slice(0, 16).replace('T', ' ') + '</td>';
+      html += '<td>' + esc(sched ? sched.name : 'Template #' + s.template_id) + '</td>';
+      html += '<td style="font-size:.85rem">' + esc(s.recipient_email || '') + '</td>';
+      html += '<td><span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:' + (s.status === 'sent' ? '#D4EDDA;color:#155724' : '#F8D7DA;color:#721C24') + '">' + esc(s.status || 'unknown') + '</span></td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+  }
+
+  // ---- Schedule Config ----
+  html += '<h2 style="margin:20px 0 12px">Schedule Configuration</h2>';
+  html += '<table><thead><tr><th>Template</th><th>Brevo ID</th><th>Trigger</th><th>Days After</th><th>Description</th><th>Active</th><th>Save</th></tr></thead><tbody>';
+  schedules.forEach(s => {
+    html += '<tr>';
+    html += '<td><strong>' + esc(s.name) + '</strong></td>';
+    html += '<td>' + (s.brevo_template_id || '---') + '</td>';
+    html += '<td>' + esc(s.trigger_type || '---') + '</td>';
+    html += '<td><input type="number" data-sched-days="' + s.id + '" value="' + (s.days_after || 0) + '" style="width:60px;padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.85rem"></td>';
+    html += '<td style="font-size:.85rem;color:#6B5B4B">' + esc(s.description || '') + '</td>';
+    html += '<td><label class="toggle"><input type="checkbox" data-sched-active="' + s.id + '"' + (s.active ? ' checked' : '') + '><span class="slider"></span></label></td>';
+    html += '<td><button class="btn btn-outline btn-sm" data-sched-save="' + s.id + '">Save</button></td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+
   panel.innerHTML = html;
   container.appendChild(panel);
 
-  // Attach handlers
+  // Send email handler
+  document.getElementById('sendEmailBtn').onclick = async () => {
+    const templateId = document.getElementById('sendTemplate').value;
+    const leadId = document.getElementById('sendRecipient').value;
+    if (!templateId) return alert('Select a template');
+    if (!leadId) return alert('Select a recipient');
+    const btn = document.getElementById('sendEmailBtn');
+    btn.disabled = true; btn.textContent = 'Sending...';
+    const res = await api('/admin/email-send-template', { method: 'POST', body: JSON.stringify({ schedule_id: parseInt(templateId), lead_id: parseInt(leadId) }) });
+    alert(res.message || res.error || 'Done');
+    btn.disabled = false; btn.textContent = 'Send';
+  };
+
+  // Schedule save handlers
   panel.querySelectorAll('[data-sched-save]').forEach(btn => {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-sched-save');
@@ -3955,18 +4107,6 @@ async function renderEmails(container) {
         active: activeInput.checked
       })});
       alert('Schedule updated.');
-    };
-  });
-
-  panel.querySelectorAll('[data-sched-test]').forEach(btn => {
-    btn.onclick = async () => {
-      const id = btn.getAttribute('data-sched-test');
-      btn.disabled = true;
-      btn.textContent = 'Sending...';
-      const res = await api('/admin/email-schedules/test/' + id, { method: 'POST' });
-      alert(res.message || (res.success ? 'Sent!' : 'Failed'));
-      btn.disabled = false;
-      btn.textContent = 'Send Test';
     };
   });
 }
