@@ -2172,7 +2172,7 @@ export default {
       // =====================
 
       if (path === '/' || path === '' || path === '/admin' || path === '/admin/') {
-        return new Response(ADMIN_HTML, { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache, must-revalidate', 'ETag': '"admin-v1"' } });
+        return new Response(ADMIN_HTML, { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache' } });
       }
 
       return json({ error: 'Not found' }, 404);
