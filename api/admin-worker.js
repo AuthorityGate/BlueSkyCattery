@@ -4329,9 +4329,10 @@ async function showUserEditModal(user) {
   const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
 
-  // Fetch trust rating and activity log
+  // Fetch trust rating, activity log, and lead details (for kitten/subscription info)
   const trust = await api('/admin/users/' + user.id + '/trust');
   const activityData = await api('/admin/users/' + user.id + '/activity');
+  const leadDetail = user.lead_id ? await api('/admin/leads/' + user.lead_id) : null;
 
   // Overall rating badge
   const ratingColors = { trusted: '#7A8B6F', moderate: '#D4AF37', caution: '#A0522D', high_risk: '#8B3A3A', limited: '#87A5B4' };
@@ -4348,7 +4349,34 @@ async function showUserEditModal(user) {
   html += '<div class="field"><label>Phone</label><div class="value">' + esc(user.lead_phone || '---') + '</div></div>';
   html += '<div class="field"><label>Created</label><div class="value">' + esc(user.created_at || '') + '</div></div>';
   html += '</div>';
-  if (user.lead_id) html += '<div style="font-size:.78rem;color:#6B5B4B;margin-bottom:12px">Lead ID: ' + user.lead_id + ' &mdash; <a href="#" style="color:#A0522D" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ');return false">View Lead</a></div>';
+  if (user.lead_id) html += '<div style="font-size:.78rem;color:#6B5B4B;margin-bottom:8px">Lead ID: ' + user.lead_id + ' &mdash; <a href="#" style="color:#A0522D" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ');return false">View Lead</a></div>';
+
+  // Subscription & status badges
+  if (leadDetail && leadDetail.lead) {
+    var ld = leadDetail.lead;
+    html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px">';
+    if (ld.subscribed_newsletter) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#D4EDDA;color:#155724;font-weight:600">Newsletter</span>';
+    if (ld.subscribed_litter_waitlist) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#CCE5FF;color:#004085;font-weight:600">Litter Waitlist</span>';
+    if (leadDetail.application) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (leadDetail.application.status === 'approved' ? '#D4EDDA;color:#155724' : leadDetail.application.status === 'submitted' ? '#FFF3CD;color:#856404' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(leadDetail.application.status) + (leadDetail.application.score ? ' (' + leadDetail.application.score + ')' : '') + '</span>';
+    html += '</div>';
+
+    // Kitten / purchase info
+    if (leadDetail.kitten) {
+      var k = leadDetail.kitten;
+      html += '<div style="border:1px solid #D4C5A9;border-radius:8px;padding:12px;margin-bottom:12px;background:#FFFDF5">';
+      html += '<h3 style="font-size:.9rem;color:#A0522D;margin:0 0 8px">Kitten: ' + esc(k.name) + '</h3>';
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.85rem">';
+      html += '<div><span style="color:#6B5B4B">Litter:</span> ' + esc(k.litter_code || '') + '</div>';
+      html += '<div><span style="color:#6B5B4B">Status:</span> ' + badge(k.status) + '</div>';
+      html += '<div><span style="color:#6B5B4B">Color:</span> ' + esc(k.color || 'TBD') + '</div>';
+      html += '<div><span style="color:#6B5B4B">Sex:</span> ' + esc(k.sex || 'TBD') + '</div>';
+      if (k.deposit_received_date) html += '<div><span style="color:#6B5B4B">Deposit:</span> $' + (k.deposit_amount || 0) + ' on ' + esc(k.deposit_received_date) + '</div>';
+      if (k.price) html += '<div><span style="color:#6B5B4B">Price:</span> $' + k.price + '</div>';
+      if (leadDetail.goHomeDate) html += '<div><span style="color:#6B5B4B">Go-Home:</span> <strong>' + esc(leadDetail.goHomeDate) + '</strong></div>';
+      if (k.breeding_rights) html += '<div><span style="font-size:.72rem;padding:2px 6px;border-radius:8px;background:#E2D9F3;color:#4A2D7A;font-weight:600">Breeding Rights</span></div>';
+      html += '</div></div>';
+    }
+  }
 
   // ---- OVERALL TRUST RATING BAR ----
   html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:16px;border-radius:10px;border:1px solid rgba(212,197,169,.3);margin-bottom:16px">';
