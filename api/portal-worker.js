@@ -1217,6 +1217,7 @@ export default {
         const session = await validateSession(env.DB, token);
         if (!session) return json({ error: 'Not authenticated' }, 401);
 
+        try {
         const data = await request.json();
         const grading = gradeApplication(data);
 
@@ -1320,6 +1321,10 @@ export default {
         ctx.waitUntil(sendEmail('Deanna@blueskycattery.com', 'New Application: ' + data.full_name + ' (' + grading.grade + ')', notification, 'Deanna').catch(() => {}));
 
         return json({ success: true, message: 'Application submitted' });
+        } catch (e) {
+          console.error('Application submit error:', e);
+          return json({ error: 'Failed to submit: ' + e.message }, 500);
+        }
       }
 
       // Save application draft
