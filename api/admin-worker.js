@@ -1468,9 +1468,10 @@ export default {
         // Send email via Brevo
         const sent = await sendEmail(lead.email, subject, body, lead.name);
 
-        // Log the outbound message
+        // Log the outbound message (scrub any passwords)
+        const safeBody = body.replace(/[Pp]assword:\s*\S+/g, 'Password: [redacted]');
         await env.DB.prepare('INSERT INTO messages (lead_id, direction, subject, body, created_at) VALUES (?, ?, ?, ?, ?)')
-          .bind(lead_id, 'outbound', subject, body, now()).run();
+          .bind(lead_id, 'outbound', subject, safeBody, now()).run();
 
         await writeAuditLog(env.DB, session.user_id, 'send_message', 'lead', lead_id, 'To: ' + lead.email + ' Subject: ' + subject);
 
