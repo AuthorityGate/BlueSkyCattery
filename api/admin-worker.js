@@ -3200,9 +3200,12 @@ async function showPersonModal(leadId, userId) {
   html += '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer"><input type="checkbox" id="pmOverride"' + (lead && lead.application_override ? ' checked' : '') + ' style="accent-color:#A0522D"> App Override</label>';
   html += '</div>';
 
-  // Application badge
+  // Application badge + reset button
   if (application) {
-    html += '<div style="margin:6px 0"><span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (application.status === 'approved' ? '#D4EDDA;color:#155724' : application.status === 'submitted' ? '#FFF3CD;color:#856404' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(application.status) + (application.score ? ' (' + application.score + ')' : '') + '</span></div>';
+    html += '<div style="margin:6px 0;display:flex;align-items:center;gap:8px">';
+    html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (application.status === 'approved' ? '#D4EDDA;color:#155724' : application.status === 'submitted' ? '#FFF3CD;color:#856404' : application.status === 'rejected' ? '#F8D7DA;color:#721C24' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(application.status) + (application.score ? ' (' + application.score + ')' : '') + '</span>';
+    html += '<button class="btn btn-sm" id="pmResetApp" data-app-id="' + application.id + '" style="font-size:.7rem;padding:2px 8px;color:#8B3A3A;background:transparent;border:1px solid #8B3A3A">Delete &amp; Allow Reapply</button>';
+    html += '</div>';
   }
 
   // Preferences (editable dropdowns)
@@ -3457,6 +3460,19 @@ async function showPersonModal(leadId, userId) {
   }
 
   // Save button
+  // Reset application button
+  var resetAppBtn = document.getElementById('pmResetApp');
+  if (resetAppBtn) {
+    resetAppBtn.onclick = async () => {
+      if (!confirm('Delete this application? The user will be able to submit a new one.')) return;
+      resetAppBtn.disabled = true; resetAppBtn.textContent = 'Deleting...';
+      var appIdToDelete = resetAppBtn.getAttribute('data-app-id');
+      var res = await api('/admin/applications/' + appIdToDelete, { method: 'DELETE' });
+      if (res.success) { alert(res.message); bg.remove(); showPersonModal(leadId, userId); }
+      else { alert(res.error || 'Failed'); resetAppBtn.disabled = false; resetAppBtn.textContent = 'Delete & Allow Reapply'; }
+    };
+  }
+
   // Create account button (for leads without accounts)
   var createAcctBtn = document.getElementById('pmCreateAccount');
   if (createAcctBtn) {
