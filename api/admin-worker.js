@@ -820,12 +820,16 @@ export default {
       if (path === '/api/admin/leads' && method === 'POST') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const data = await request.json();
-        if (!data.name) return json({ error: 'Name required' }, 400);
-        const result = await env.DB.prepare('INSERT INTO leads (name, email, phone, source, status, subscribed_newsletter, subscribed_litter_waitlist, application_override, sex_preference, color_preference, temperament_preference, eye_color_preference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .bind(data.name, data.email || null, data.phone || null, data.source || 'admin_entry', data.status || 'approved', data.subscribed_newsletter ? 1 : 0, data.subscribed_litter_waitlist ? 1 : 0, data.application_override ? 1 : 0, data.sex_preference || null, data.color_preference || null, data.temperament_preference || null, data.eye_color_preference || null, now(), now()).run();
-        await writeAuditLog(env.DB, session.user_id, 'lead_created', { name: data.name, email: data.email });
-        return json({ success: true, id: result.meta.last_row_id });
+        try {
+          const data = await request.json();
+          if (!data.name) return json({ error: 'Name required' }, 400);
+          const result = await env.DB.prepare('INSERT INTO leads (name, email, phone, source, status, subscribed_newsletter, subscribed_litter_waitlist, application_override, sex_preference, color_preference, temperament_preference, eye_color_preference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(data.name, data.email || null, data.phone || null, data.source || 'admin_entry', data.status || 'approved', data.subscribed_newsletter ? 1 : 0, data.subscribed_litter_waitlist ? 1 : 0, data.application_override ? 1 : 0, data.sex_preference || null, data.color_preference || null, data.temperament_preference || null, data.eye_color_preference || null, now(), now()).run();
+          await writeAuditLog(env.DB, session.user_id, 'lead_created', { name: data.name, email: data.email });
+          return json({ success: true, id: result.meta.last_row_id });
+        } catch (e) {
+          return json({ error: 'Failed to create lead: ' + e.message }, 500);
+        }
       }
 
       // Approve lead -> create applicant account
