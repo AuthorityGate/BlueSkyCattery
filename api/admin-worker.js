@@ -924,6 +924,18 @@ export default {
         return json({ application: app });
       }
 
+      // Reset/delete application (allows user to reapply)
+      if (path.match(/^\/api\/admin\/applications\/\d+$/) && method === 'DELETE') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const appId = path.split('/').pop();
+        const app = await env.DB.prepare('SELECT id, full_name, email, user_id FROM applications WHERE id = ?').bind(appId).first();
+        if (!app) return json({ error: 'Application not found' }, 404);
+        await env.DB.prepare('DELETE FROM applications WHERE id = ?').bind(appId).run();
+        await writeAuditLog(env.DB, session.user_id, 'application_deleted', { application_id: appId, email: app.email, name: app.full_name });
+        return json({ success: true, message: 'Application deleted. ' + (app.full_name || 'User') + ' can now reapply.' });
+      }
+
       // Update application status/notes
       if (path.match(/^\/api\/admin\/applications\/\d+$/) && method === 'PUT') {
         const session = await requireAdmin();
@@ -3798,7 +3810,7 @@ async function showAppModal(appId) {
   html += '<h3 style="margin:16px 0 8px">Admin Decision</h3>';
   html += '<div class="field"><label>Status</label><select id="appStatus"><option value="submitted"' + (app.status==='submitted'?' selected':'') + '>Submitted</option><option value="reviewed"' + (app.status==='reviewed'?' selected':'') + '>Reviewed</option><option value="approved"' + (app.status==='approved'?' selected':'') + '>Approved</option><option value="waitlist"' + (app.status==='waitlist'?' selected':'') + '>Waitlist</option><option value="rejected"' + (app.status==='rejected'?' selected':'') + '>Rejected</option></select></div>';
   html += '<div class="field"><label>Admin Notes</label><textarea id="appNotes" rows="3">' + esc(app.admin_notes || '') + '</textarea></div>';
-  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-outline" id="reanalyzeBtn" style="color:#87A5B4;border-color:#87A5B4">Re-analyze with AI</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
+  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-outline" id="resetAppBtn" style="color:#8B3A3A;border-color:#8B3A3A">Delete &amp; Allow Reapply</button><button class="btn btn-outline" id="reanalyzeBtn" style="color:#87A5B4;border-color:#87A5B4">Re-analyze with AI</button><button class="btn btn-primary" id="saveAppBtn">Save Review</button></div>';
 
   modal.innerHTML = html;
   bg.appendChild(modal);
@@ -3810,6 +3822,15 @@ async function showAppModal(appId) {
     await api('/admin/applications/' + appId, { method: 'PUT', body: JSON.stringify({ status, admin_notes: notes }) });
     bg.remove();
     renderApp();
+  };
+
+  document.getElementById('resetAppBtn').onclick = async () => {
+    if (!confirm('Delete this application? ' + (app.full_name || 'The user') + ' will be able to submit a new application.')) return;
+    const btn = document.getElementById('resetAppBtn');
+    btn.disabled = true; btn.textContent = 'Deleting...';
+    const res = await api('/admin/applications/' + appId, { method: 'DELETE' });
+    if (res.success) { alert(res.message); bg.remove(); renderApp(); }
+    else { alert(res.error || 'Failed'); btn.disabled = false; btn.textContent = 'Delete & Allow Reapply'; }
   };
 
   document.getElementById('reanalyzeBtn').onclick = async () => {
