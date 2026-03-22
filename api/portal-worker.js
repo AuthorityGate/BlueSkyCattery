@@ -1949,6 +1949,7 @@ function nextStep() {
   const form = document.getElementById('wizardForm');
   if (form && !form.reportValidity()) return;
   collectCurrentStepData();
+  saveDraft();
   currentStep++;
   renderWizard();
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1956,6 +1957,7 @@ function nextStep() {
 
 function prevStep() {
   collectCurrentStepData();
+  saveDraft();
   currentStep--;
   renderWizard();
   window.scrollTo({ top: 0, behavior: 'smooth' });
