@@ -3219,17 +3219,17 @@ async function showPersonModal(leadId, userId) {
   });
   html += '</select></div>';
 
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
+  html += '<div class="field"><label>Sold Date</label><input type="date" id="pmSoldDate" value="' + esc(kitten ? (kitten.sold_date || '') : '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+  html += '<div class="field"><label>Go-Home Date</label><input type="date" id="pmGoHomeDate" value="' + esc(kitten ? (kitten.go_home_date || '') : '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+  html += '</div>';
   if (kitten) {
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
-    html += '<div class="field"><label>Sold Date</label><input type="date" id="pmSoldDate" value="' + esc(kitten.sold_date || '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
-    html += '<div class="field"><label>Go-Home Date</label><input type="date" id="pmGoHomeDate" value="' + esc(kitten.go_home_date || '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
-    html += '</div>';
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
     if (kitten.deposit_received_date) html += '<div style="font-size:.85rem"><span style="color:#6B5B4B">Deposit:</span> $' + (kitten.deposit_amount || 0) + ' on ' + esc(kitten.deposit_received_date) + '</div>';
     if (kitten.price) html += '<div style="font-size:.85rem"><span style="color:#6B5B4B">Price:</span> $' + kitten.price + '</div>';
     html += '</div>';
-    html += '<div style="margin-top:6px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem"><input type="checkbox" id="pmBreedingRights"' + (kitten.breeding_rights ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:#A0522D"> Breeding Rights (skip spay/neuter email)</label></div>';
   }
+  html += '<div style="margin-top:6px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem"><input type="checkbox" id="pmBreedingRights"' + (kitten && kitten.breeding_rights ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:#A0522D"> Breeding Rights (skip spay/neuter email)</label></div>';
   html += '</div>';
 
   // ---- User Account Section ----
