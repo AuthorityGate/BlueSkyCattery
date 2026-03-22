@@ -695,6 +695,55 @@ export default {
       // =====================
 
       // Get all leads (with optional search & filter)
+      // Unified people list (leads + users merged)
+      if (path === '/api/admin/people' && method === 'GET') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const search = url.searchParams.get('search') || '';
+        const typeFilter = url.searchParams.get('type') || '';
+
+        let sql = `
+          SELECT l.id as lead_id, u.id as user_id, COALESCE(l.name, u.email) as name, COALESCE(u.email, l.email) as email,
+                 l.phone, l.source, l.status as lead_status, u.role as user_role, u.status as user_status,
+                 l.sex_preference, l.color_preference, l.temperament_preference, l.eye_color_preference,
+                 l.subscribed_newsletter, l.subscribed_litter_waitlist, u.admin_notes,
+                 COALESCE(u.created_at, l.created_at) as created_at,
+                 CASE WHEN u.id IS NOT NULL THEN 'user' ELSE 'lead' END as person_type
+          FROM leads l LEFT JOIN users u ON u.lead_id = l.id OR (u.lead_id IS NULL AND LOWER(u.email) = LOWER(l.email))
+          WHERE 1=1
+        `;
+        const params = [];
+
+        if (typeFilter === 'leads') { sql += " AND u.id IS NULL"; }
+        else if (typeFilter === 'users') { sql += " AND u.id IS NOT NULL"; }
+
+        if (search) {
+          sql += " AND (LOWER(COALESCE(l.name,'')) LIKE ? OR LOWER(COALESCE(u.email, l.email)) LIKE ? OR LOWER(COALESCE(l.phone,'')) LIKE ?)";
+          const s = '%' + search.toLowerCase() + '%';
+          params.push(s, s, s);
+        }
+
+        // Also include users without a lead record (like admin accounts)
+        let sql2 = `
+          SELECT NULL as lead_id, u.id as user_id, u.email as name, u.email,
+                 NULL as phone, NULL as source, NULL as lead_status, u.role as user_role, u.status as user_status,
+                 NULL as sex_preference, NULL as color_preference, NULL as temperament_preference, NULL as eye_color_preference,
+                 NULL as subscribed_newsletter, NULL as subscribed_litter_waitlist, u.admin_notes,
+                 u.created_at, 'user' as person_type
+          FROM users u
+          WHERE u.lead_id IS NULL AND NOT EXISTS (SELECT 1 FROM leads l WHERE LOWER(l.email) = LOWER(u.email))
+        `;
+        if (typeFilter === 'leads') { sql2 += " AND 0"; }
+        if (search) {
+          sql2 += " AND LOWER(u.email) LIKE ?";
+          params.push('%' + search.toLowerCase() + '%');
+        }
+
+        const fullSql = sql + ' UNION ALL ' + sql2 + ' ORDER BY created_at DESC';
+        const people = await env.DB.prepare(fullSql).bind(...params).all();
+        return json({ people: people.results });
+      }
+
       if (path === '/api/admin/leads' && method === 'GET') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
@@ -739,15 +788,35 @@ export default {
         return json({ lead, messages: messages.results, kitten, goHomeDate, user, application });
       }
 
-      // Update lead status
+      // Update lead (all fields)
       if (path.match(/^\/api\/admin\/leads\/\d+$/) && method === 'PUT') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
         const leadId = path.split('/').pop();
-        const { status } = await request.json();
-        await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind(status, now(), leadId).run();
-        await writeAuditLog(env.DB, session.user_id, 'lead_status_change', { lead_id: leadId, status });
+        const data = await request.json();
+        const fields = [];
+        const values = [];
+        const editableFields = ['name','email','phone','status','source','subscribed_newsletter','subscribed_litter_waitlist','application_override','sex_preference','color_preference','temperament_preference','eye_color_preference','other_preference','home_address','marital_status','partner_name','partner_email'];
+        editableFields.forEach(f => {
+          if (data[f] !== undefined) { fields.push(f + ' = ?'); values.push(data[f]); }
+        });
+        fields.push('updated_at = ?'); values.push(now());
+        values.push(leadId);
+        await env.DB.prepare('UPDATE leads SET ' + fields.join(', ') + ' WHERE id = ?').bind(...values).run();
+        await writeAuditLog(env.DB, session.user_id, 'lead_updated', { lead_id: leadId, changes: Object.keys(data) });
         return json({ success: true });
+      }
+
+      // Create lead manually (admin adds a person)
+      if (path === '/api/admin/leads' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const data = await request.json();
+        if (!data.name) return json({ error: 'Name required' }, 400);
+        const result = await env.DB.prepare('INSERT INTO leads (name, email, phone, source, status, subscribed_newsletter, subscribed_litter_waitlist, application_override, sex_preference, color_preference, temperament_preference, eye_color_preference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(data.name, data.email || null, data.phone || null, data.source || 'admin_entry', data.status || 'approved', data.subscribed_newsletter ? 1 : 0, data.subscribed_litter_waitlist ? 1 : 0, data.application_override ? 1 : 0, data.sex_preference || null, data.color_preference || null, data.temperament_preference || null, data.eye_color_preference || null, now(), now()).run();
+        await writeAuditLog(env.DB, session.user_id, 'lead_created', { name: data.name, email: data.email });
+        return json({ success: true, id: result.meta.last_row_id });
       }
 
       // Approve lead -> create applicant account
@@ -2505,7 +2574,7 @@ async function renderApp() {
           el('h1', {}, 'Blue Sky Cattery Admin'),
           el('div', { class: 'subtitle' }, me.user.email)
         ),
-        badgeCount > 0 ? el('div', { style: 'background:#A0522D;color:#fff;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;cursor:pointer;animation:pulse 2s infinite', onclick: () => { currentTab = 'leads'; renderApp(); }, html: badgeCount + ' new' }) : null
+        badgeCount > 0 ? el('div', { style: 'background:#A0522D;color:#fff;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;cursor:pointer;animation:pulse 2s infinite', onclick: () => { currentTab = 'people'; renderApp(); }, html: badgeCount + ' new' }) : null
       ),
       el('div', { style: 'display:flex;gap:8px;align-items:center' },
         el('a', { href: 'https://blueskycattery.com', style: 'color:#C8B88A;font-size:.8rem;text-decoration:none', html: 'View Site &rarr;' }),
@@ -2515,8 +2584,8 @@ async function renderApp() {
   );
   app.appendChild(header);
 
-  const tabs = ['todo','dashboard','leads','applications','kittens','cats','social','settings','emails','users','audit','help'];
-  const tabLabels = { todo:'To Do', dashboard:'Dashboard', leads:'Leads', applications:'Applications', kittens:'Kittens', cats:'Cats', social:'Social', settings:'Settings', emails:'Emails', users:'Users', audit:'Audit Log', help:'Help' };
+  const tabs = ['todo','dashboard','people','applications','kittens','cats','social','settings','emails','audit','help'];
+  const tabLabels = { todo:'To Do', dashboard:'Dashboard', people:'People', applications:'Applications', kittens:'Kittens', cats:'Cats', social:'Social', settings:'Settings', emails:'Emails', audit:'Audit Log', help:'Help' };
 
   const nav = el('nav', { class: 'container tabs' });
   tabs.forEach(t => {
@@ -2529,14 +2598,13 @@ async function renderApp() {
 
   if (currentTab === 'todo') await renderTodo(content);
   else if (currentTab === 'dashboard') await renderDashboard(content);
-  else if (currentTab === 'leads') await renderLeads(content);
+  else if (currentTab === 'people') await renderPeople(content);
   else if (currentTab === 'applications') await renderApplications(content);
   else if (currentTab === 'kittens') await renderKittens(content);
   else if (currentTab === 'cats') await renderCats(content);
   else if (currentTab === 'social') await renderSocial(content);
   else if (currentTab === 'settings') await renderSettings(content);
   else if (currentTab === 'emails') await renderEmails(content);
-  else if (currentTab === 'users') await renderUsers(content);
   else if (currentTab === 'audit') await renderAudit(content);
   else if (currentTab === 'help') renderHelp(content);
 }
@@ -2564,7 +2632,7 @@ async function renderTodo(container) {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
       html += '<div><strong>' + esc(l.name) + '</strong><br><span style="font-size:.78rem;color:#6B5B4B">' + esc(l.email) + ' &mdash; ' + esc(l.source) + (l.user_id ? ' &mdash; <span style="color:#7A8B6F;font-weight:600">has account</span>' : '') + ' &mdash; ' + timeAgo(l.created_at) + '</span></div>';
       html += '<div style="display:flex;gap:6px">';
-      html += '<button class="btn btn-outline btn-sm" onclick="showLeadModal(' + l.id + ')">View</button>';
+      html += '<button class="btn btn-outline btn-sm" onclick="showPersonModal(' + l.id + ')">View</button>';
       html += '<button class="btn btn-sm" data-todo-dismiss-lead="' + l.id + '" style="background:#87A5B4;color:#fff;font-size:.72rem">Dismiss</button>';
       html += '</div></div>';
     });
@@ -2594,7 +2662,7 @@ async function renderTodo(container) {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#FDF9F3;border:1px solid #D4C5A9;border-radius:8px;margin-bottom:6px">';
       html += '<div><strong>' + esc(m.name) + '</strong> &mdash; ' + esc(m.subject||'Message') + '<br><span style="font-size:.78rem;color:#6B5B4B">' + timeAgo(m.created_at) + '</span></div>';
       html += '<div style="display:flex;gap:6px">';
-      html += '<button class="btn btn-outline btn-sm" onclick="showLeadModal(' + m.lead_id + ')">Reply</button>';
+      html += '<button class="btn btn-outline btn-sm" onclick="showPersonModal(' + m.lead_id + ')">Reply</button>';
       html += '<button class="btn btn-sm" data-todo-dismiss-msg="' + m.id + '" style="background:#8B3A3A;color:#fff;font-size:.72rem" title="Dismiss">&#10005; Dismiss</button>';
       html += '</div></div>';
     });
@@ -2680,7 +2748,7 @@ async function renderTodo(container) {
     btn.onclick = () => {
       const userId = btn.getAttribute('data-redflag-user');
       const user = (data.redFlagUsers||[]).find(u => u.id == userId);
-      if (user) showUserEditModal({ id: user.id, email: user.email, lead_name: user.name, role: 'applicant', status: 'active' });
+      if (user) showPersonModal(null, user.id);
     };
   });
 
@@ -2904,113 +2972,193 @@ async function renderDashboard(container) {
   container.appendChild(panel);
 }
 
-// ---- Leads ----
+// ---- People (merged Leads + Users) ----
 
-let leadSearch = '';
-let leadStatusFilter = '';
+let peopleSearch = '';
+let peopleTypeFilter = '';
 
-async function renderLeads(container) {
+async function renderPeople(container) {
   const params = new URLSearchParams();
-  if (leadSearch) params.set('search', leadSearch);
-  if (leadStatusFilter) params.set('status', leadStatusFilter);
-  const { leads } = await api('/admin/leads?' + params.toString());
+  if (peopleSearch) params.set('search', peopleSearch);
+  if (peopleTypeFilter) params.set('type', peopleTypeFilter);
+  const { people } = await api('/admin/people?' + params.toString());
   const panel = el('div', { class: 'panel active' });
 
-  // Header with search and export
   let toolbar = '<div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 16px;flex-wrap:wrap;gap:12px">';
-  toolbar += '<h2 style="margin:0">Leads & Contacts</h2>';
+  toolbar += '<h2 style="margin:0">People</h2>';
   toolbar += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
-  toolbar += '<input type="text" id="leadSearchInput" placeholder="Search name, email, phone..." value="' + esc(leadSearch) + '" style="padding:8px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;width:220px">';
-  toolbar += '<select id="leadStatusFilter" style="padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem"><option value="">All Status</option><option value="new"' + (leadStatusFilter==='new'?' selected':'') + '>New</option><option value="approved"' + (leadStatusFilter==='approved'?' selected':'') + '>Approved</option><option value="contacted"' + (leadStatusFilter==='contacted'?' selected':'') + '>Contacted</option></select>';
-  toolbar += '<button class="btn btn-sm btn-outline" id="leadSearchBtn">Search</button>';
-  toolbar += '<a href="' + API + '/admin/leads/export" class="btn btn-sm btn-outline" style="text-decoration:none;color:#6B5B4B" target="_blank">Export CSV</a>';
+  toolbar += '<input type="text" id="peopleSearchInput" placeholder="Search name, email, phone..." value="' + esc(peopleSearch) + '" style="padding:8px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;width:220px">';
+  toolbar += '<select id="peopleTypeFilter" style="padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem"><option value="">All People</option><option value="leads"' + (peopleTypeFilter==='leads'?' selected':'') + '>Leads Only</option><option value="users"' + (peopleTypeFilter==='users'?' selected':'') + '>Users Only</option></select>';
+  toolbar += '<button class="btn btn-sm btn-outline" id="peopleSearchBtn">Search</button>';
+  toolbar += '<button class="btn btn-sm btn-primary" id="addPersonBtn">+ Add Person</button>';
   toolbar += '</div></div>';
   panel.innerHTML = toolbar;
 
-  // Results count
-  panel.innerHTML += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (leads||[]).length + ' lead(s) found</div>';
+  panel.innerHTML += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (people||[]).length + ' person(s) found</div>';
 
   const table = el('table');
-  table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Source</th><th>Preferences</th><th>Status</th><th>When</th><th>Actions</th></tr></thead>';
+  table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Type</th><th>Status</th><th>Source</th><th>When</th><th>Actions</th></tr></thead>';
   const tbody = el('tbody');
-  (leads || []).forEach(lead => {
+  (people || []).forEach(p => {
     const tr = el('tr');
-    let prefs = [];
-    if (lead.sex_preference && lead.sex_preference !== 'no_preference') prefs.push(lead.sex_preference);
-    if (lead.color_preference && lead.color_preference !== 'no_preference') prefs.push(lead.color_preference);
-    if (lead.temperament_preference && lead.temperament_preference !== 'no_preference') prefs.push(lead.temperament_preference.replace(/_/g,' '));
-    if (lead.eye_color_preference && lead.eye_color_preference !== 'no_preference') prefs.push(lead.eye_color_preference + ' eyes');
-    const prefHtml = prefs.length > 0 ? prefs.map(p => '<span style="display:inline-block;padding:1px 6px;border-radius:8px;font-size:.7rem;background:#F5EDE0;color:#6B5B4B;margin:1px">' + esc(p) + '</span>').join('') : '<span style="color:#ccc;font-size:.78rem">—</span>';
-    tr.innerHTML = '<td><strong>'+esc(lead.name)+'</strong></td><td>'+esc(lead.email)+'</td><td>'+esc(lead.phone||'—')+'</td><td>'+esc(lead.source)+'</td><td style="max-width:180px">'+prefHtml+'</td><td>'+badge(lead.status)+'</td><td>'+timeAgo(lead.created_at)+'</td>';
+    const typeBadge = p.person_type === 'user'
+      ? '<span style="font-size:.7rem;padding:2px 6px;border-radius:8px;background:' + (p.user_role === 'admin' ? '#A0522D' : '#87A5B4') + ';color:#fff;font-weight:600">' + esc(p.user_role || 'user') + '</span>'
+      : '<span style="font-size:.7rem;padding:2px 6px;border-radius:8px;background:#E8E0D0;color:#6B5B4B;font-weight:600">lead</span>';
+    const status = p.person_type === 'user' ? (p.user_status || '') : (p.lead_status || '');
+    tr.innerHTML = '<td><strong>' + esc(p.name || '') + '</strong></td><td>' + esc(p.email || '') + '</td><td>' + esc(p.phone || '') + '</td><td>' + typeBadge + '</td><td>' + badge(status) + '</td><td>' + esc(p.source || '') + '</td><td>' + timeAgo(p.created_at) + '</td>';
     const actionTd = el('td', { style: 'white-space:nowrap' });
-    actionTd.appendChild(el('button', { class: 'btn btn-outline btn-sm', onclick: () => showLeadModal(lead.id) }, 'View'));
-    if (lead.status === 'new') {
-      if (lead.user_id) {
-        // Account already exists (self-registered) — show dismiss instead of approve
-        actionTd.appendChild(el('button', { class: 'btn btn-sm', style: 'margin-left:4px;background:#87A5B4;color:#fff', onclick: async () => {
-          await api('/admin/leads/' + lead.id, { method: 'PUT', body: JSON.stringify({ status: 'reviewed' }) });
-          renderApp();
-        }}, 'Dismiss'));
-      } else {
-        // No account — show approve
-        actionTd.appendChild(el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:4px', onclick: async () => {
-          if (confirm('Approve ' + lead.name + '? This will create their account and send a welcome email.')) {
-            const res = await api('/admin/approve', { method: 'POST', body: JSON.stringify({ lead_id: lead.id }) });
-            if (res.success) { showApprovalModal(lead.name, lead.email, res.tempPassword); }
-            else alert(res.error || 'Failed');
-          }
-        }}, 'Approve'));
-      }
+    const viewBtn = el('button', { class: 'btn btn-outline btn-sm' }, 'Edit');
+    viewBtn.onclick = () => showPersonModal(p.lead_id, p.user_id);
+    actionTd.appendChild(viewBtn);
+    if (p.person_type === 'lead' && p.lead_status === 'new') {
+      const approveBtn = el('button', { class: 'btn btn-success btn-sm', style: 'margin-left:4px' }, 'Approve');
+      approveBtn.onclick = async () => {
+        if (confirm('Approve ' + (p.name||'') + '? This will create their account and send a welcome email.')) {
+          const res = await api('/admin/approve', { method: 'POST', body: JSON.stringify({ lead_id: p.lead_id }) });
+          if (res.success) showApprovalModal(p.name, p.email, res.tempPassword);
+          else alert(res.error || 'Failed');
+        }
+      };
+      actionTd.appendChild(approveBtn);
     }
     tr.appendChild(actionTd);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
   panel.appendChild(table);
-  if (!leads || leads.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No leads match your search.</p>';
+  if (!people || people.length === 0) panel.innerHTML += '<p style="color:#6B5B4B;padding:20px;text-align:center">No people match your search.</p>';
 
   container.appendChild(panel);
 
-  // Attach search handlers
-  document.getElementById('leadSearchBtn').onclick = () => {
-    leadSearch = document.getElementById('leadSearchInput').value;
-    leadStatusFilter = document.getElementById('leadStatusFilter').value;
+  document.getElementById('peopleSearchBtn').onclick = () => {
+    peopleSearch = document.getElementById('peopleSearchInput').value;
+    peopleTypeFilter = document.getElementById('peopleTypeFilter').value;
     container.innerHTML = '';
-    renderLeads(container);
+    renderPeople(container);
   };
-  document.getElementById('leadSearchInput').onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('leadSearchBtn').click(); };
-  document.getElementById('leadStatusFilter').onchange = () => { document.getElementById('leadSearchBtn').click(); };
+  document.getElementById('peopleSearchInput').onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('peopleSearchBtn').click(); };
+  document.getElementById('peopleTypeFilter').onchange = () => { document.getElementById('peopleSearchBtn').click(); };
+  document.getElementById('addPersonBtn').onclick = () => showAddPersonModal();
 }
 
-async function showLeadModal(leadId) {
-  const data = await api('/admin/leads/' + leadId);
-  const lead = data.lead;
-  const messages = data.messages;
-  const kitten = data.kitten;
-  const goHomeDate = data.goHomeDate;
-  const linkedUser = data.user;
-  const application = data.application;
+function showAddPersonModal() {
   const bg = el('div', { class: 'modal-bg' });
   const modal = el('div', { class: 'modal' });
+  modal.innerHTML = '<h2>Add Person</h2>' +
+    '<div class="field"><label>Name *</label><input type="text" id="apName" required></div>' +
+    '<div class="form-grid">' +
+    '<div class="field"><label>Email</label><input type="email" id="apEmail"></div>' +
+    '<div class="field"><label>Phone</label><input type="text" id="apPhone"></div></div>' +
+    '<div class="form-grid">' +
+    '<div class="field"><label>Source</label><select id="apSource"><option value="admin_entry">Admin Entry</option><option value="phone">Phone</option><option value="in_person">In Person</option><option value="referral">Referral</option><option value="contact">Website Contact</option></select></div>' +
+    '<div class="field"><label>Status</label><select id="apStatus"><option value="approved">Approved</option><option value="new">New</option><option value="contacted">Contacted</option></select></div></div>' +
+    '<div style="margin:12px 0"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.9rem"><input type="checkbox" id="apOverride" checked style="width:16px;height:16px;accent-color:#A0522D"> Application Override (skip application requirement)</label></div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">' +
+    '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem"><input type="checkbox" id="apNewsletter" style="accent-color:#A0522D"> Newsletter</label>' +
+    '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem"><input type="checkbox" id="apWaitlist" style="accent-color:#A0522D"> Litter Waitlist</label></div>' +
+    '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="apSaveBtn">Save</button></div>';
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
 
-  let html = '<h2>' + esc(lead.name) + '</h2>';
+  document.getElementById('apSaveBtn').onclick = async () => {
+    const name = document.getElementById('apName').value.trim();
+    if (!name) { alert('Name is required'); return; }
+    const btn = document.getElementById('apSaveBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    const res = await api('/admin/leads', { method: 'POST', body: JSON.stringify({
+      name: name,
+      email: document.getElementById('apEmail').value.trim() || null,
+      phone: document.getElementById('apPhone').value.trim() || null,
+      source: document.getElementById('apSource').value,
+      status: document.getElementById('apStatus').value,
+      application_override: document.getElementById('apOverride').checked ? 1 : 0,
+      subscribed_newsletter: document.getElementById('apNewsletter').checked ? 1 : 0,
+      subscribed_litter_waitlist: document.getElementById('apWaitlist').checked ? 1 : 0
+    })});
+    if (res.success) { bg.remove(); renderApp(); }
+    else { alert(res.error || 'Failed'); btn.disabled = false; btn.textContent = 'Save'; }
+  };
+}
+
+async function showPersonModal(leadId, userId) {
+  // Fetch lead data if we have a leadId
+  let lead = null, messages = [], kitten = null, goHomeDate = null, linkedUser = null, application = null;
+  if (leadId) {
+    const data = await api('/admin/leads/' + leadId);
+    lead = data.lead;
+    messages = data.messages || [];
+    kitten = data.kitten;
+    goHomeDate = data.goHomeDate;
+    linkedUser = data.user;
+    application = data.application;
+    if (!userId && linkedUser) userId = linkedUser.id;
+  }
+
+  // Fetch user data if we have a userId
+  let userObj = null, trust = null, activityData = null;
+  if (userId) {
+    const usersRes = await api('/admin/users?search=');
+    userObj = (usersRes.users || []).find(u => u.id == userId);
+    trust = await api('/admin/users/' + userId + '/trust');
+    activityData = await api('/admin/users/' + userId + '/activity');
+    if (!leadId && userObj && userObj.lead_id) {
+      leadId = userObj.lead_id;
+      const data = await api('/admin/leads/' + leadId);
+      lead = data.lead;
+      messages = data.messages || [];
+      kitten = data.kitten;
+      goHomeDate = data.goHomeDate;
+      application = data.application;
+    }
+  }
+
+  const bg = el('div', { class: 'modal-bg' });
+  const modal = el('div', { class: 'modal' });
+  const personName = (lead ? lead.name : (userObj ? (userObj.lead_name || userObj.email) : 'Unknown'));
+
+  let html = '<h2>' + esc(personName) + '</h2>';
+
+  // ---- Contact Info (editable) ----
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
-  html += '<div class="field"><label>Email</label><div class="value">' + esc(lead.email) + '</div></div>';
-  html += '<div class="field"><label>Phone</label><div class="value">' + esc(lead.phone || 'N/A') + '</div></div>';
-  html += '<div class="field"><label>Source</label><div class="value">' + esc(lead.source) + '</div></div>';
-  html += '<div class="field"><label>Status</label><div class="value">' + badge(lead.status) + '</div></div>';
-  html += '</div>';
-  html += '<div class="field"><label>Created</label><div class="value">' + esc(lead.created_at) + '</div></div>';
-
-  // Subscription & waitlist info
-  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">';
-  if (lead.subscribed_newsletter) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#D4EDDA;color:#155724;font-weight:600">Newsletter</span>';
-  if (lead.subscribed_litter_waitlist) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#CCE5FF;color:#004085;font-weight:600">Litter Waitlist</span>';
-  if (linkedUser) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#E2D9F3;color:#4A2D7A;font-weight:600">Portal Account (' + esc(linkedUser.role) + ')</span>';
-  if (application) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (application.status === 'approved' ? '#D4EDDA;color:#155724' : application.status === 'submitted' ? '#FFF3CD;color:#856404' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(application.status) + (application.score ? ' (' + application.score + ')' : '') + '</span>';
+  html += '<div class="field"><label>Name</label><input type="text" id="pmName" value="' + esc(lead ? lead.name : (userObj ? userObj.lead_name : '') || '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+  html += '<div class="field"><label>Email</label><input type="email" id="pmEmail" value="' + esc(lead ? lead.email : (userObj ? userObj.email : '') || '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+  html += '<div class="field"><label>Phone</label><input type="text" id="pmPhone" value="' + esc(lead ? (lead.phone || '') : (userObj ? (userObj.lead_phone || '') : '')) + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+  html += '<div class="field"><label>Source</label><input type="text" id="pmSource" value="' + esc(lead ? (lead.source || '') : '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
   html += '</div>';
 
-  // Kitten / purchase info
+  // Status & subscriptions
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
+  const leadStatus = lead ? lead.status : '';
+  html += '<div class="field"><label>Lead Status</label><select id="pmLeadStatus" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="new"' + (leadStatus==='new'?' selected':'') + '>New</option><option value="contacted"' + (leadStatus==='contacted'?' selected':'') + '>Contacted</option><option value="approved"' + (leadStatus==='approved'?' selected':'') + '>Approved</option><option value="reviewed"' + (leadStatus==='reviewed'?' selected':'') + '>Reviewed</option><option value="declined"' + (leadStatus==='declined'?' selected':'') + '>Declined</option></select></div>';
+  html += '<div class="field"><label>Created</label><div class="value" style="padding:8px 0">' + esc(lead ? lead.created_at : (userObj ? userObj.created_at : '')) + '</div></div>';
+  html += '</div>';
+
+  // Checkboxes
+  html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0">';
+  html += '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer"><input type="checkbox" id="pmNewsletter"' + (lead && lead.subscribed_newsletter ? ' checked' : '') + ' style="accent-color:#A0522D"> Newsletter</label>';
+  html += '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer"><input type="checkbox" id="pmWaitlist"' + (lead && lead.subscribed_litter_waitlist ? ' checked' : '') + ' style="accent-color:#A0522D"> Litter Waitlist</label>';
+  html += '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer"><input type="checkbox" id="pmOverride"' + (lead && lead.application_override ? ' checked' : '') + ' style="accent-color:#A0522D"> App Override</label>';
+  html += '</div>';
+
+  // Application badge
+  if (application) {
+    html += '<div style="margin:6px 0"><span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (application.status === 'approved' ? '#D4EDDA;color:#155724' : application.status === 'submitted' ? '#FFF3CD;color:#856404' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(application.status) + (application.score ? ' (' + application.score + ')' : '') + '</span></div>';
+  }
+
+  // Preferences (editable dropdowns)
+  html += '<div style="margin-top:12px"><strong style="font-size:.88rem">Preferences</strong></div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">';
+  const sexPref = lead ? (lead.sex_preference || 'no_preference') : 'no_preference';
+  html += '<div class="field"><label>Sex</label><select id="pmSexPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (sexPref==='no_preference'?' selected':'') + '>No Preference</option><option value="male"' + (sexPref==='male'?' selected':'') + '>Male</option><option value="female"' + (sexPref==='female'?' selected':'') + '>Female</option></select></div>';
+  const colorPref = lead ? (lead.color_preference || 'no_preference') : 'no_preference';
+  html += '<div class="field"><label>Color</label><select id="pmColorPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (colorPref==='no_preference'?' selected':'') + '>No Preference</option><option value="seal"' + (colorPref==='seal'?' selected':'') + '>Seal</option><option value="blue"' + (colorPref==='blue'?' selected':'') + '>Blue</option><option value="chocolate"' + (colorPref==='chocolate'?' selected':'') + '>Chocolate</option><option value="lavender"' + (colorPref==='lavender'?' selected':'') + '>Lavender</option><option value="cinnamon"' + (colorPref==='cinnamon'?' selected':'') + '>Cinnamon</option><option value="fawn"' + (colorPref==='fawn'?' selected':'') + '>Fawn</option><option value="red"' + (colorPref==='red'?' selected':'') + '>Red</option><option value="cream"' + (colorPref==='cream'?' selected':'') + '>Cream</option><option value="ebony"' + (colorPref==='ebony'?' selected':'') + '>Ebony</option><option value="white"' + (colorPref==='white'?' selected':'') + '>White</option></select></div>';
+  const tempPref = lead ? (lead.temperament_preference || 'no_preference') : 'no_preference';
+  html += '<div class="field"><label>Temperament</label><select id="pmTempPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (tempPref==='no_preference'?' selected':'') + '>No Preference</option><option value="playful_active"' + (tempPref==='playful_active'?' selected':'') + '>Playful/Active</option><option value="calm_gentle"' + (tempPref==='calm_gentle'?' selected':'') + '>Calm/Gentle</option><option value="social_outgoing"' + (tempPref==='social_outgoing'?' selected':'') + '>Social/Outgoing</option></select></div>';
+  const eyePref = lead ? (lead.eye_color_preference || 'no_preference') : 'no_preference';
+  html += '<div class="field"><label>Eye Color</label><select id="pmEyePref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (eyePref==='no_preference'?' selected':'') + '>No Preference</option><option value="green"' + (eyePref==='green'?' selected':'') + '>Green</option><option value="blue"' + (eyePref==='blue'?' selected':'') + '>Blue</option></select></div>';
+  html += '</div>';
+
+  // Kitten card (read-only if linked)
   if (kitten) {
     html += '<div style="border:1px solid #D4C5A9;border-radius:8px;padding:12px;margin:12px 0;background:#FFFDF5">';
     html += '<h3 style="font-size:.9rem;color:#A0522D;margin:0 0 8px">Kitten: ' + esc(kitten.name) + '</h3>';
@@ -3026,18 +3174,122 @@ async function showLeadModal(leadId) {
     html += '</div></div>';
   }
 
-  // Preferences
-  if (lead.sex_preference || lead.color_preference || lead.eye_color_preference || lead.temperament_preference) {
-    html += '<div style="font-size:.85rem;color:#6B5B4B;margin:4px 0">Preferences: ';
-    var prefs = [];
-    if (lead.sex_preference && lead.sex_preference !== 'no_preference') prefs.push(lead.sex_preference);
-    if (lead.color_preference && lead.color_preference !== 'no_preference') prefs.push(lead.color_preference);
-    if (lead.eye_color_preference && lead.eye_color_preference !== 'no_preference') prefs.push(lead.eye_color_preference);
-    if (lead.temperament_preference && lead.temperament_preference !== 'no_preference') prefs.push(lead.temperament_preference);
-    html += esc(prefs.join(', ') || 'None') + '</div>';
+  // ---- User Account Section (if user exists) ----
+  if (userObj && trust) {
+    html += '<div style="border-top:1px solid #D4C5A9;padding-top:12px;margin-top:12px">';
+    html += '<strong style="font-size:.9rem">User Account</strong>';
+
+    // Role/Status
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
+    html += '<div class="field"><label>Role</label><select id="pmRole" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="applicant"' + (userObj.role === 'applicant' ? ' selected' : '') + '>Applicant</option><option value="admin"' + (userObj.role === 'admin' ? ' selected' : '') + '>Admin</option></select></div>';
+    html += '<div class="field"><label>User Status</label><select id="pmUserStatus" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="active"' + (userObj.status === 'active' ? ' selected' : '') + '>Active</option><option value="suspended"' + (userObj.status === 'suspended' ? ' selected' : '') + '>Suspended</option><option value="inactive"' + (userObj.status === 'inactive' ? ' selected' : '') + '>Inactive</option></select></div>';
+    html += '</div>';
+
+    html += '<div class="field" style="margin-top:8px"><label>Admin Notes</label><textarea id="pmNotes" rows="3" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem" placeholder="Call notes, observations...">' + esc(userObj.admin_notes || '') + '</textarea></div>';
+
+    // Trust rating bar
+    const ratingColors = { trusted: '#7A8B6F', moderate: '#D4AF37', caution: '#A0522D', high_risk: '#8B3A3A', limited: '#87A5B4' };
+    const ratingLabels = { trusted: 'Trusted', moderate: 'Moderate', caution: 'Caution', high_risk: 'High Risk', limited: 'Limited (App Only)' };
+    const rc = ratingColors[trust.overall.rating] || '#6B5B4B';
+    const rl = ratingLabels[trust.overall.rating] || trust.overall.rating;
+    html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:16px;border-radius:10px;border:1px solid rgba(212,197,169,.3);margin:12px 0">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong style="font-size:.9rem">Trust Rating</strong>';
+    html += '<span style="background:' + rc + ';color:#fff;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700">' + rl + (trust.overall.score !== null ? ' (' + trust.overall.score + ')' : '') + '</span></div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.78rem">';
+    html += '<div style="text-align:center"><div style="color:#6B5B4B">App Score</div><strong style="font-size:1.1rem">' + (trust.overall.appScore !== null ? trust.overall.appScore : '---') + '</strong></div>';
+    html += '<div style="text-align:center"><div style="color:#6B5B4B">Verification</div><strong style="font-size:1.1rem;color:' + (trust.verification.score !== null ? (trust.verification.score >= 70 ? '#7A8B6F' : trust.verification.score >= 40 ? '#D4AF37' : '#8B3A3A') : '#87A5B4') + '">' + (trust.verification.score !== null ? trust.verification.score + '%' : 'Not started') + '</strong></div>';
+    html += '<div style="text-align:center"><div style="color:#6B5B4B">Identity Risk</div><strong style="font-size:1.1rem;color:' + (trust.identity.risk === 0 ? '#7A8B6F' : trust.identity.risk <= 30 ? '#D4AF37' : '#8B3A3A') + '">' + (trust.identity.risk === 0 ? 'Clean' : trust.identity.risk + '%') + '</strong></div>';
+    html += '</div></div>';
+
+    // Identity flags
+    if (trust.identity.duplicates.length > 0 || trust.identity.inconsistencies.length > 0) {
+      html += '<div style="background:rgba(139,58,58,.05);border:1px solid rgba(139,58,58,.15);padding:12px;border-radius:8px;margin-bottom:12px">';
+      html += '<strong style="color:#8B3A3A;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">Identity Flags</strong>';
+      if (trust.identity.duplicates.length > 0) {
+        html += '<div style="margin-top:8px">';
+        trust.identity.duplicates.forEach(d => {
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:4px 0;color:#3E3229">';
+          html += '<span>&#9888; <strong>' + esc(d.type) + ':</strong> ' + esc(d.name) + ' (' + esc(d.email) + ')' + (d.has_account ? ' <span style="color:#8B3A3A;font-weight:700">HAS ACCOUNT</span>' : '') + '</span>';
+          if (d.has_account && d.user_id) {
+            html += '<button class="btn btn-sm btn-danger" data-merge-secondary="' + d.user_id + '" style="font-size:.7rem;padding:2px 8px">Merge Into This User</button>';
+          }
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+      if (trust.identity.inconsistencies.length > 0) {
+        trust.identity.inconsistencies.forEach(i => {
+          html += '<div style="font-size:.82rem;padding:4px 0;color:#8B3A3A">&#9888; ' + esc(i) + '</div>';
+        });
+      }
+      html += '</div>';
+    }
+
+    // Verification checklist
+    html += '<div style="margin-bottom:12px"><strong style="font-size:.88rem">Verification Checklist</strong> <span style="font-size:.75rem;color:#6B5B4B">(' + trust.verification.checkedCount + '/' + trust.verification.items.length + ' checked)</span></div>';
+    trust.verification.items.forEach(item => {
+      const val = item.value;
+      const selectId = 'verify_' + item.key;
+      const detailId = 'verifyDetail_' + item.key;
+      const borderColor = val === 'fail' ? 'rgba(139,58,58,.3)' : val === 'concern' ? 'rgba(212,175,55,.3)' : val === 'pass' ? 'rgba(122,139,111,.3)' : '#e8e2d8';
+      html += '<div style="margin-bottom:8px;padding:8px 10px;background:#FDF9F3;border-radius:6px;border:1px solid ' + borderColor + '">';
+      html += '<div style="display:flex;align-items:center;gap:8px">';
+      html += '<select id="' + selectId + '" style="padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.78rem;width:120px">';
+      html += '<option value="not_checked"' + (val === 'not_checked' ? ' selected' : '') + '>Not checked</option>';
+      html += '<option value="pass"' + (val === 'pass' ? ' selected' : '') + '>&#10003; Pass</option>';
+      html += '<option value="concern"' + (val === 'concern' ? ' selected' : '') + '>&#9888; Concern</option>';
+      html += '<option value="fail"' + (val === 'fail' ? ' selected' : '') + '>&#10005; Fail</option>';
+      html += '</select>';
+      html += '<span style="font-size:.85rem;flex:1">' + esc(item.label) + '</span>';
+      html += '<span style="font-size:.72rem;color:#6B5B4B">(' + item.weight + ' pts)</span>';
+      html += '</div>';
+      const detailVal = item.detail || '';
+      html += '<input type="text" id="' + detailId + '" value="' + esc(detailVal) + '" placeholder="Details: vet name, phone, what was said..." style="width:100%;padding:4px 8px;border:1px solid #e8e2d8;border-radius:4px;font-size:.78rem;margin-top:6px;color:#3E3229">';
+      html += '</div>';
+    });
+    html += '<button class="btn btn-sm btn-info" id="saveVerifyBtn" style="margin-top:6px">Save Verification</button>';
+
+    // Activity timeline
+    html += '<div style="margin-top:16px;border-top:1px solid #D4C5A9;padding-top:16px">';
+    html += '<strong style="font-size:.9rem">Activity Timeline</strong>';
+    html += '<div style="display:flex;gap:8px;margin-top:10px;margin-bottom:12px">';
+    html += '<div style="display:flex;gap:8px;align-items:center">';
+    html += '<select id="activityType" style="padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px;font-size:.84rem">';
+    html += '<option value="call">&#9742; Call</option>';
+    html += '<option value="email">&#9993; Email</option>';
+    html += '<option value="note">&#9998; Note</option>';
+    html += '<option value="vet_check">&#9877; Vet Check</option>';
+    html += '<option value="video_visit">&#9654; Video Visit</option>';
+    html += '</select>';
+    html += '<button class="btn btn-sm btn-primary" id="addActivityBtn" style="white-space:nowrap">+ Add</button>';
+    html += '</div>';
+    html += '<textarea id="activityNote" rows="2" placeholder="What happened?" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;background:#fff;margin-top:6px;resize:vertical"></textarea>';
+    html += '</div>';
+    html += '<div id="activityTimeline" style="max-height:300px;overflow-y:auto">';
+    const typeIcons = { call: '&#9742;', email: '&#9993;', note: '&#9998;', vet_check: '&#9877;', video_visit: '&#9654;', verification: '&#10003;', system: '&#9881;' };
+    const typeColors = { call: '#4A90D9', email: '#D4AF37', note: '#7A8B6F', vet_check: '#A0522D', video_visit: '#6B5B4B', verification: '#7A8B6F', system: '#87A5B4' };
+    const typeLabels = { call: 'Call', email: 'Email', note: 'Note', vet_check: 'Vet Check', video_visit: 'Video Visit', verification: 'Verification', system: 'System' };
+    (activityData.entries || []).forEach(entry => {
+      const icon = typeIcons[entry.type] || '&#9679;';
+      const color = typeColors[entry.type] || '#6B5B4B';
+      const label = typeLabels[entry.type] || entry.type;
+      html += '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0ebe3">';
+      html += '<div style="min-width:32px;height:32px;background:' + color + ';color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.9rem">' + icon + '</div>';
+      html += '<div style="flex:1">';
+      html += '<div style="font-size:.84rem;font-weight:600;color:' + color + '">' + esc(label) + '</div>';
+      html += '<div style="font-size:.84rem;color:#3E3229;margin-top:2px">' + esc(entry.note || '') + '</div>';
+      html += '<div style="font-size:.72rem;color:#6B5B4B;margin-top:4px">' + timeAgo(entry.created_at) + (entry.created_by_email ? ' &mdash; ' + esc(entry.created_by_email) : '') + '</div>';
+      html += '</div></div>';
+    });
+    if (!activityData.entries || activityData.entries.length === 0) {
+      html += '<div style="font-size:.82rem;color:#6B5B4B;padding:12px 0;text-align:center">No activity logged yet</div>';
+    }
+    html += '</div></div>';
+
+    html += '</div>'; // end user account section
   }
 
-  // Message history
+  // ---- Conversation History ----
   html += '<h3 style="margin:20px 0 8px">Conversation</h3>';
   (messages || []).forEach(msg => {
     const isOutbound = msg.direction === 'outbound';
@@ -3051,64 +3303,171 @@ async function showLeadModal(leadId) {
   });
 
   // Send message form with templates
-  html += '<h3 style="margin:20px 0 8px">Send Message</h3>';
-  html += '<div class="field"><label>Quick Template</label><select id="msgTemplate" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;margin-bottom:8px">';
-  html += '<option value="">Write from scratch...</option>';
-  html += '<option value="welcome">Welcome &amp; Portal Access</option>';
-  html += '<option value="followup">Follow-Up / Checking In</option>';
-  html += '<option value="application_reminder">Application Reminder</option>';
-  html += '<option value="approved">Application Approved</option>';
-  html += '<option value="waitlist">Waitlisted - No Kittens Available</option>';
-  html += '<option value="kitten_available">Kitten Available for You</option>';
-  html += '<option value="deposit_reminder">Deposit Reminder</option>';
-  html += '<option value="thankyou">Thank You</option>';
-  html += '</select></div>';
-  html += '<div class="field"><label>Subject</label><input type="text" id="msgSubject" value="Blue Sky Cattery" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px"></div>';
-  html += '<div class="field"><label>Message</label><textarea id="msgBody" rows="6" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px" placeholder="Type your message to ' + esc(lead.name) + '..."></textarea></div>';
+  if (leadId) {
+    html += '<h3 style="margin:20px 0 8px">Send Message</h3>';
+    html += '<div class="field"><label>Quick Template</label><select id="msgTemplate" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;margin-bottom:8px">';
+    html += '<option value="">Write from scratch...</option>';
+    html += '<option value="welcome">Welcome &amp; Portal Access</option>';
+    html += '<option value="followup">Follow-Up / Checking In</option>';
+    html += '<option value="application_reminder">Application Reminder</option>';
+    html += '<option value="approved">Application Approved</option>';
+    html += '<option value="waitlist">Waitlisted - No Kittens Available</option>';
+    html += '<option value="kitten_available">Kitten Available for You</option>';
+    html += '<option value="deposit_reminder">Deposit Reminder</option>';
+    html += '<option value="thankyou">Thank You</option>';
+    html += '</select></div>';
+    html += '<div class="field"><label>Subject</label><input type="text" id="msgSubject" value="Blue Sky Cattery" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+    html += '<div class="field"><label>Message</label><textarea id="msgBody" rows="6" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px" placeholder="Type your message to ' + esc(personName) + '..."></textarea></div>';
+  }
 
   html += '<div class="actions">';
   html += '<button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Close</button>';
-  html += '<button class="btn btn-primary" id="sendMsgBtn">Send Email</button>';
+  html += '<button class="btn btn-primary" id="savePersonBtn">Save</button>';
+  if (leadId) html += '<button class="btn btn-info" id="sendMsgBtn" style="margin-left:4px">Send Email</button>';
   html += '</div>';
 
   modal.innerHTML = html;
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
-  // Email template handler
-  const _N = String.fromCharCode(10);
-  const _tpl = {
-    welcome: { s: 'Welcome to Blue Sky Cattery!', b: 'Dear ' + lead.name + ',' + _N + _N + 'Thank you for your interest in Blue Sky Cattery! We are so glad you found us.' + _N + _N + 'We specialize in CFA-registered Oriental Shorthairs, raised underfoot in our home in Northwest Missouri. Every kitten gets individual attention, love, and the best start to life.' + _N + _N + 'To take the next step, please visit our Application Portal:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'There you can create an account, fill out our adoption application, view available kittens, and join our waitlist for upcoming litters.' + _N + _N + 'If you have any questions at all, just reply to this email. We love talking about our cats!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    followup: { s: 'Checking In - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'I wanted to follow up and see if you had any questions about our kittens or the adoption process. We are always happy to chat!' + _N + _N + 'If you have not had a chance to visit our portal yet, you can do so at:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'Feel free to reply to this email anytime.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    application_reminder: { s: 'Your Application is Waiting - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'I noticed you started the adoption process but have not completed your application yet. No rush at all! Just wanted to let you know your progress is saved and you can pick up right where you left off.' + _N + _N + 'Log in here: https://portal.blueskycattery.com' + _N + _N + 'Our kittens go to approved families on a first-come basis, so completing your application sooner gives you the best selection.' + _N + _N + 'Let me know if you have any questions!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    approved: { s: 'Great News! Your Application is Approved - Blue Sky Cattery', b: 'Dear ' + lead.name + ',' + _N + _N + 'Wonderful news! After reviewing your application, we are happy to approve you as an adopter with Blue Sky Cattery.' + _N + _N + 'Next steps:' + _N + '1. Log into the portal: https://portal.blueskycattery.com' + _N + '2. Review available kittens and let us know your preference' + _N + '3. A $500 non-refundable deposit secures your kitten' + _N + _N + 'We will be in touch to schedule a video visit so you can meet your potential new family member!' + _N + _N + 'Congratulations and welcome to the Blue Sky family!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    waitlist: { s: 'Waitlist Update - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'Thank you for your application! We do not currently have kittens available that match your preferences, but we have added you to our priority waitlist.' + _N + _N + 'You will be among the first to know when new kittens arrive. We typically have 1-2 litters per year, and waitlist members get first choice.' + _N + _N + 'In the meantime, feel free to follow us on social media for updates and adorable kitten photos!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    kitten_available: { s: 'A Kitten is Available for You! - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'Exciting news! We have a kitten that we think would be a wonderful match for you.' + _N + _N + 'Please log into the portal to view details and photos:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'If you are interested, please let me know as soon as possible. A $500 non-refundable deposit will secure your kitten. Our kittens find homes quickly!' + _N + _N + 'I would also love to set up a video visit so you can see the kitten live.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    deposit_reminder: { s: 'Deposit Reminder - Blue Sky Cattery', b: 'Hi ' + lead.name + ',' + _N + _N + 'This is a friendly reminder that a $500 non-refundable deposit is needed to secure your kitten reservation. The deposit will be applied toward the total adoption fee.' + _N + _N + 'We accept: Venmo, Zelle, PayPal, check, or cash.' + _N + _N + 'Please let me know once you have sent the deposit or if you have any questions about payment.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
-    thankyou: { s: 'Thank You! - Blue Sky Cattery', b: 'Dear ' + lead.name + ',' + _N + _N + 'Thank you so much for reaching out to Blue Sky Cattery. We truly appreciate your interest in our cats and our program.' + _N + _N + 'Whether you are looking for a kitten now or in the future, we are always here to answer questions and help you find the perfect companion.' + _N + _N + 'Do not hesitate to reach out anytime!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' }
-  };
-  document.getElementById('msgTemplate').onchange = () => {
-    const t = _tpl[document.getElementById('msgTemplate').value];
-    if (t) { document.getElementById('msgSubject').value = t.s; document.getElementById('msgBody').value = t.b; }
-  };
+  // ---- Event Handlers ----
 
-  document.getElementById('sendMsgBtn').onclick = async () => {
-    const subject = document.getElementById('msgSubject').value;
-    const body = document.getElementById('msgBody').value;
-    if (!body.trim()) { alert('Please enter a message'); return; }
-    const btn = document.getElementById('sendMsgBtn');
-    btn.disabled = true; btn.textContent = 'Sending...';
-    const res = await api('/admin/send-message', { method: 'POST', body: JSON.stringify({ lead_id: leadId, subject, body }) });
-    if (res.success) {
-      bg.remove();
-      showLeadModal(leadId); // Refresh to show sent message
-    } else {
-      alert('Failed: ' + (res.error || 'Unknown error'));
-      btn.disabled = false; btn.textContent = 'Send Email';
+  // Email templates
+  if (leadId) {
+    const _N = String.fromCharCode(10);
+    const _tpl = {
+      welcome: { s: 'Welcome to Blue Sky Cattery!', b: 'Dear ' + personName + ',' + _N + _N + 'Thank you for your interest in Blue Sky Cattery! We are so glad you found us.' + _N + _N + 'We specialize in CFA-registered Oriental Shorthairs, raised underfoot in our home in Northwest Missouri. Every kitten gets individual attention, love, and the best start to life.' + _N + _N + 'To take the next step, please visit our Application Portal:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'There you can create an account, fill out our adoption application, view available kittens, and join our waitlist for upcoming litters.' + _N + _N + 'If you have any questions at all, just reply to this email. We love talking about our cats!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      followup: { s: 'Checking In - Blue Sky Cattery', b: 'Hi ' + personName + ',' + _N + _N + 'I wanted to follow up and see if you had any questions about our kittens or the adoption process. We are always happy to chat!' + _N + _N + 'If you have not had a chance to visit our portal yet, you can do so at:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'Feel free to reply to this email anytime.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      application_reminder: { s: 'Your Application is Waiting - Blue Sky Cattery', b: 'Hi ' + personName + ',' + _N + _N + 'I noticed you started the adoption process but have not completed your application yet. No rush at all! Just wanted to let you know your progress is saved and you can pick up right where you left off.' + _N + _N + 'Log in here: https://portal.blueskycattery.com' + _N + _N + 'Our kittens go to approved families on a first-come basis, so completing your application sooner gives you the best selection.' + _N + _N + 'Let me know if you have any questions!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      approved: { s: 'Great News! Your Application is Approved - Blue Sky Cattery', b: 'Dear ' + personName + ',' + _N + _N + 'Wonderful news! After reviewing your application, we are happy to approve you as an adopter with Blue Sky Cattery.' + _N + _N + 'Next steps:' + _N + '1. Log into the portal: https://portal.blueskycattery.com' + _N + '2. Review available kittens and let us know your preference' + _N + '3. A $500 non-refundable deposit secures your kitten' + _N + _N + 'We will be in touch to schedule a video visit so you can meet your potential new family member!' + _N + _N + 'Congratulations and welcome to the Blue Sky family!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      waitlist: { s: 'Waitlist Update - Blue Sky Cattery', b: 'Hi ' + personName + ',' + _N + _N + 'Thank you for your application! We do not currently have kittens available that match your preferences, but we have added you to our priority waitlist.' + _N + _N + 'You will be among the first to know when new kittens arrive. We typically have 1-2 litters per year, and waitlist members get first choice.' + _N + _N + 'In the meantime, feel free to follow us on social media for updates and adorable kitten photos!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      kitten_available: { s: 'A Kitten is Available for You! - Blue Sky Cattery', b: 'Hi ' + personName + ',' + _N + _N + 'Exciting news! We have a kitten that we think would be a wonderful match for you.' + _N + _N + 'Please log into the portal to view details and photos:' + _N + 'https://portal.blueskycattery.com' + _N + _N + 'If you are interested, please let me know as soon as possible. A $500 non-refundable deposit will secure your kitten. Our kittens find homes quickly!' + _N + _N + 'I would also love to set up a video visit so you can see the kitten live.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      deposit_reminder: { s: 'Deposit Reminder - Blue Sky Cattery', b: 'Hi ' + personName + ',' + _N + _N + 'This is a friendly reminder that a $500 non-refundable deposit is needed to secure your kitten reservation. The deposit will be applied toward the total adoption fee.' + _N + _N + 'We accept: Venmo, Zelle, PayPal, check, or cash.' + _N + _N + 'Please let me know once you have sent the deposit or if you have any questions about payment.' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' },
+      thankyou: { s: 'Thank You! - Blue Sky Cattery', b: 'Dear ' + personName + ',' + _N + _N + 'Thank you so much for reaching out to Blue Sky Cattery. We truly appreciate your interest in our cats and our program.' + _N + _N + 'Whether you are looking for a kitten now or in the future, we are always here to answer questions and help you find the perfect companion.' + _N + _N + 'Do not hesitate to reach out anytime!' + _N + _N + 'Warm regards,' + _N + 'Deanna' + _N + 'Blue Sky Cattery' }
+    };
+    document.getElementById('msgTemplate').onchange = () => {
+      const t = _tpl[document.getElementById('msgTemplate').value];
+      if (t) { document.getElementById('msgSubject').value = t.s; document.getElementById('msgBody').value = t.b; }
+    };
+    document.getElementById('sendMsgBtn').onclick = async () => {
+      const subject = document.getElementById('msgSubject').value;
+      const body = document.getElementById('msgBody').value;
+      if (!body.trim()) { alert('Please enter a message'); return; }
+      const btn = document.getElementById('sendMsgBtn');
+      btn.disabled = true; btn.textContent = 'Sending...';
+      const res = await api('/admin/send-message', { method: 'POST', body: JSON.stringify({ lead_id: leadId, subject, body }) });
+      if (res.success) {
+        bg.remove();
+        showPersonModal(leadId, userId);
+      } else {
+        alert('Failed: ' + (res.error || 'Unknown error'));
+        btn.disabled = false; btn.textContent = 'Send Email';
+      }
+    };
+  }
+
+  // Save button
+  document.getElementById('savePersonBtn').onclick = async () => {
+    const btn = document.getElementById('savePersonBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    // Save lead fields
+    if (leadId) {
+      await api('/admin/leads/' + leadId, { method: 'PUT', body: JSON.stringify({
+        name: document.getElementById('pmName').value.trim(),
+        email: document.getElementById('pmEmail').value.trim(),
+        phone: document.getElementById('pmPhone').value.trim(),
+        source: document.getElementById('pmSource').value.trim(),
+        status: document.getElementById('pmLeadStatus').value,
+        subscribed_newsletter: document.getElementById('pmNewsletter').checked ? 1 : 0,
+        subscribed_litter_waitlist: document.getElementById('pmWaitlist').checked ? 1 : 0,
+        application_override: document.getElementById('pmOverride').checked ? 1 : 0,
+        sex_preference: document.getElementById('pmSexPref').value,
+        color_preference: document.getElementById('pmColorPref').value,
+        temperament_preference: document.getElementById('pmTempPref').value,
+        eye_color_preference: document.getElementById('pmEyePref').value
+      })});
     }
+    // Save user fields
+    if (userId && userObj) {
+      const roleEl = document.getElementById('pmRole');
+      const statusEl = document.getElementById('pmUserStatus');
+      const notesEl = document.getElementById('pmNotes');
+      if (roleEl && statusEl) {
+        const res = await api('/admin/users/' + userId, { method: 'PUT', body: JSON.stringify({
+          role: roleEl.value,
+          status: statusEl.value,
+          admin_notes: notesEl ? notesEl.value : ''
+        })});
+        if (res.needsVerification) {
+          alert(res.message);
+          btn.disabled = false; btn.textContent = 'Save';
+          return;
+        }
+      }
+    }
+    bg.remove();
+    renderApp();
   };
 
-  // Attach delete handlers to message buttons
+  // Verification save (if user section shown)
+  if (userId && trust) {
+    document.getElementById('saveVerifyBtn').onclick = async () => {
+      const verification = {};
+      trust.verification.items.forEach(item => {
+        const sel = document.getElementById('verify_' + item.key);
+        if (sel) verification[item.key] = sel.value;
+        const detailEl = document.getElementById('verifyDetail_' + item.key);
+        if (detailEl && detailEl.value) verification[item.key + '_detail'] = detailEl.value;
+      });
+      const btn = document.getElementById('saveVerifyBtn');
+      btn.disabled = true; btn.textContent = 'Saving...';
+      try {
+        const res = await api('/admin/users/' + userId + '/verify', { method: 'PUT', body: JSON.stringify({ verification }) });
+        if (res.success) {
+          btn.textContent = 'Saved!'; btn.style.background = '#7A8B6F';
+          setTimeout(() => { bg.remove(); showPersonModal(leadId, userId); }, 500);
+        } else {
+          alert('Save failed: ' + (res.error || 'Unknown error'));
+          btn.disabled = false; btn.textContent = 'Save Verification';
+        }
+      } catch(e) {
+        alert('Error saving: ' + e.message);
+        btn.disabled = false; btn.textContent = 'Save Verification';
+      }
+    };
+
+    // Add activity handler
+    document.getElementById('addActivityBtn').onclick = async () => {
+      const type = document.getElementById('activityType').value;
+      const note = document.getElementById('activityNote').value.trim();
+      if (!note) { document.getElementById('activityNote').focus(); return; }
+      const btn = document.getElementById('addActivityBtn');
+      btn.disabled = true; btn.textContent = '...';
+      await api('/admin/users/' + userId + '/activity', { method: 'POST', body: JSON.stringify({ type, note }) });
+      bg.remove();
+      showPersonModal(leadId, userId);
+    };
+
+    // Merge button handlers
+    bg.querySelectorAll('[data-merge-secondary]').forEach(btn => {
+      btn.onclick = async () => {
+        const secondaryId = btn.getAttribute('data-merge-secondary');
+        if (!confirm('MERGE ACCOUNTS' + String.fromCharCode(10) + String.fromCharCode(10) + 'This will absorb the duplicate account into THIS user (' + (userObj ? userObj.email : '') + ').' + String.fromCharCode(10) + String.fromCharCode(10) + 'All activity, applications, messages, and notes from the duplicate will be moved here. The duplicate account will be deleted.' + String.fromCharCode(10) + String.fromCharCode(10) + 'This cannot be undone. Continue?')) return;
+        btn.disabled = true; btn.textContent = 'Merging...';
+        const res = await api('/admin/users/merge', { method: 'POST', body: JSON.stringify({ primary_id: userId, secondary_id: parseInt(secondaryId) }) });
+        if (res.success) {
+          alert('Merge complete: ' + res.message + String.fromCharCode(10) + String.fromCharCode(10) + (res.details || []).join(', '));
+          bg.remove();
+          renderApp();
+        } else {
+          alert('Merge failed: ' + (res.error || 'Unknown error'));
+          btn.disabled = false; btn.textContent = 'Merge Into This User';
+        }
+      };
+    });
+  }
+
+  // Message delete handlers
   bg.querySelectorAll('[data-msg-del]').forEach(btn => {
     btn.onclick = async () => {
       const msgId = btn.getAttribute('data-msg-del');
@@ -3117,7 +3476,7 @@ async function showLeadModal(leadId) {
       const res = await api('/admin/messages/' + msgId, { method: 'DELETE' });
       if (res.success) {
         bg.remove();
-        showLeadModal(leadId); // Refresh
+        showPersonModal(leadId, userId);
       } else {
         alert('Failed to delete');
         btn.disabled = false;
@@ -4230,361 +4589,6 @@ async function renderEmails(container) {
       alert('Schedule updated.');
     };
   });
-}
-
-// ---- Users ----
-
-let userSearch = '';
-
-async function renderUsers(container) {
-  const params = new URLSearchParams();
-  if (userSearch) params.set('search', userSearch);
-  const { users } = await api('/admin/users?' + params.toString());
-  const panel = el('div', { class: 'panel active' });
-
-  // Search bar
-  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 16px;flex-wrap:wrap;gap:12px">';
-  html += '<h2 style="margin:0">User Management</h2>';
-  html += '<div style="display:flex;gap:8px;align-items:center">';
-  html += '<input type="text" id="userSearchInput" placeholder="Search name, email, phone..." value="' + esc(userSearch) + '" style="padding:8px 14px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;width:260px">';
-  html += '<button class="btn btn-sm btn-outline" id="userSearchBtn">Search</button>';
-  html += '</div></div>';
-
-  html += '<div style="font-size:.82rem;color:#6B5B4B;margin-bottom:8px">' + (users||[]).length + ' user(s)' + (userSearch ? ' matching "' + esc(userSearch) + '"' : '') + '</div>';
-
-  html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Trust</th><th>Role</th><th>Status</th><th>Notes</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
-  (users || []).forEach(u => {
-    // Quick trust indicator from verification JSON
-    let trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#87A5B4;color:#fff">Limited</span>';
-    try {
-      const v = u.verification ? JSON.parse(u.verification) : {};
-      const vals = Object.values(v).filter(x => x && x !== 'not_checked');
-      if (vals.length > 0) {
-        const passes = vals.filter(x => x === 'pass').length;
-        const fails = vals.filter(x => x === 'fail').length;
-        if (fails > 0) trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#8B3A3A;color:#fff">&#9888; Flags</span>';
-        else if (passes === vals.length && vals.length >= 4) trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#7A8B6F;color:#fff">Trusted</span>';
-        else trustBadge = '<span style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;background:#D4AF37;color:#3E3229">' + passes + '/' + vals.length + '</span>';
-      }
-    } catch(e) {}
-    html += '<tr>';
-    html += '<td><strong>' + esc(u.lead_name || '---') + '</strong></td>';
-    html += '<td>' + esc(u.email) + '</td>';
-    html += '<td>' + esc(u.lead_phone || '---') + '</td>';
-    html += '<td>' + trustBadge + '</td>';
-    html += '<td><span style="padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:' + (u.role === 'admin' ? '#A0522D' : '#87A5B4') + ';color:#fff;text-transform:uppercase">' + esc(u.role) + '</span></td>';
-    html += '<td>' + badge(u.status) + '</td>';
-    html += '<td style="max-width:200px;font-size:.78rem;color:#6B5B4B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(u.admin_notes || '') + '">' + esc(u.admin_notes ? (u.admin_notes.length > 40 ? u.admin_notes.slice(0,40) + '...' : u.admin_notes) : '---') + '</td>';
-    html += '<td>' + timeAgo(u.created_at) + '</td>';
-    html += '<td style="white-space:nowrap">';
-    html += '<button class="btn btn-outline btn-sm" data-user-edit="' + u.id + '">Edit</button> ';
-    html += '<button class="btn btn-danger btn-sm" data-user-reset="' + u.id + '">Reset PW</button>';
-    html += '</td></tr>';
-  });
-  html += '</tbody></table>';
-  if (!users || users.length === 0) html += '<p style="color:#6B5B4B;padding:20px;text-align:center">No users match your search.</p>';
-
-  panel.innerHTML = html;
-  container.appendChild(panel);
-
-  // Search handlers
-  document.getElementById('userSearchBtn').onclick = () => {
-    userSearch = document.getElementById('userSearchInput').value;
-    container.innerHTML = '';
-    renderUsers(container);
-  };
-  document.getElementById('userSearchInput').onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('userSearchBtn').click(); };
-
-  // Edit handlers
-  panel.querySelectorAll('[data-user-edit]').forEach(btn => {
-    const userId = btn.getAttribute('data-user-edit');
-    const user = (users || []).find(u => u.id == userId);
-    btn.onclick = () => showUserEditModal(user);
-  });
-
-  // Reset password handlers
-  panel.querySelectorAll('[data-user-reset]').forEach(btn => {
-    btn.onclick = async () => {
-      const userId = btn.getAttribute('data-user-reset');
-      const user = (users || []).find(u => u.id == userId);
-      if (!confirm('Reset password for ' + (user ? user.email : 'this user') + '? A new password will be emailed to them.')) return;
-      btn.disabled = true;
-      btn.textContent = 'Resetting...';
-      const res = await api('/admin/users/' + userId + '/reset-password', { method: 'POST' });
-      if (res.success) {
-        alert('Password reset. New password: ' + res.tempPassword + '\\n\\nEmail sent to: ' + (user ? user.email : ''));
-      } else {
-        alert(res.error || 'Failed');
-      }
-      btn.disabled = false;
-      btn.textContent = 'Reset PW';
-    };
-  });
-}
-
-async function showUserEditModal(user) {
-  const bg = el('div', { class: 'modal-bg' });
-  const modal = el('div', { class: 'modal' });
-
-  // Fetch trust rating, activity log, and lead details (for kitten/subscription info)
-  const trust = await api('/admin/users/' + user.id + '/trust');
-  const activityData = await api('/admin/users/' + user.id + '/activity');
-  const leadDetail = user.lead_id ? await api('/admin/leads/' + user.lead_id) : null;
-
-  // Overall rating badge
-  const ratingColors = { trusted: '#7A8B6F', moderate: '#D4AF37', caution: '#A0522D', high_risk: '#8B3A3A', limited: '#87A5B4' };
-  const ratingLabels = { trusted: 'Trusted', moderate: 'Moderate', caution: 'Caution', high_risk: 'High Risk', limited: 'Limited (App Only)' };
-  const rc = ratingColors[trust.overall.rating] || '#6B5B4B';
-  const rl = ratingLabels[trust.overall.rating] || trust.overall.rating;
-
-  let html = '<h2>Edit User</h2>';
-
-  // Contact info header
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
-  html += '<div class="field"><label>Name</label><div class="value" style="font-weight:700">' + esc(user.lead_name || '---') + '</div></div>';
-  html += '<div class="field"><label>Email</label><div class="value">' + esc(user.email) + '</div></div>';
-  html += '<div class="field"><label>Phone</label><div class="value">' + esc(user.lead_phone || '---') + '</div></div>';
-  html += '<div class="field"><label>Created</label><div class="value">' + esc(user.created_at || '') + '</div></div>';
-  html += '</div>';
-  if (user.lead_id) html += '<div style="font-size:.78rem;color:#6B5B4B;margin-bottom:8px">Lead ID: ' + user.lead_id + ' &mdash; <a href="#" style="color:#A0522D" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ');return false">View Lead</a></div>';
-
-  // Subscription & status badges
-  if (leadDetail && leadDetail.lead) {
-    var ld = leadDetail.lead;
-    html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px">';
-    if (ld.subscribed_newsletter) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#D4EDDA;color:#155724;font-weight:600">Newsletter</span>';
-    if (ld.subscribed_litter_waitlist) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:#CCE5FF;color:#004085;font-weight:600">Litter Waitlist</span>';
-    if (leadDetail.application) html += '<span style="font-size:.72rem;padding:3px 8px;border-radius:10px;background:' + (leadDetail.application.status === 'approved' ? '#D4EDDA;color:#155724' : leadDetail.application.status === 'submitted' ? '#FFF3CD;color:#856404' : '#F5EDE0;color:#6B5B4B') + ';font-weight:600">App: ' + esc(leadDetail.application.status) + (leadDetail.application.score ? ' (' + leadDetail.application.score + ')' : '') + '</span>';
-    html += '</div>';
-
-    // Kitten / purchase info
-    if (leadDetail.kitten) {
-      var k = leadDetail.kitten;
-      html += '<div style="border:1px solid #D4C5A9;border-radius:8px;padding:12px;margin-bottom:12px;background:#FFFDF5">';
-      html += '<h3 style="font-size:.9rem;color:#A0522D;margin:0 0 8px">Kitten: ' + esc(k.name) + '</h3>';
-      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.85rem">';
-      html += '<div><span style="color:#6B5B4B">Litter:</span> ' + esc(k.litter_code || '') + '</div>';
-      html += '<div><span style="color:#6B5B4B">Status:</span> ' + badge(k.status) + '</div>';
-      html += '<div><span style="color:#6B5B4B">Color:</span> ' + esc(k.color || 'TBD') + '</div>';
-      html += '<div><span style="color:#6B5B4B">Sex:</span> ' + esc(k.sex || 'TBD') + '</div>';
-      if (k.deposit_received_date) html += '<div><span style="color:#6B5B4B">Deposit:</span> $' + (k.deposit_amount || 0) + ' on ' + esc(k.deposit_received_date) + '</div>';
-      if (k.price) html += '<div><span style="color:#6B5B4B">Price:</span> $' + k.price + '</div>';
-      if (leadDetail.goHomeDate) html += '<div><span style="color:#6B5B4B">Go-Home:</span> <strong>' + esc(leadDetail.goHomeDate) + '</strong></div>';
-      if (k.breeding_rights) html += '<div><span style="font-size:.72rem;padding:2px 6px;border-radius:8px;background:#E2D9F3;color:#4A2D7A;font-weight:600">Breeding Rights</span></div>';
-      html += '</div></div>';
-    }
-  }
-
-  // ---- OVERALL TRUST RATING BAR ----
-  html += '<div style="background:linear-gradient(145deg,#FDF9F3,#F8F3EA);padding:16px;border-radius:10px;border:1px solid rgba(212,197,169,.3);margin-bottom:16px">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong style="font-size:.9rem">Trust Rating</strong>';
-  html += '<span style="background:' + rc + ';color:#fff;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700">' + rl + (trust.overall.score !== null ? ' (' + trust.overall.score + ')' : '') + '</span></div>';
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.78rem">';
-  html += '<div style="text-align:center"><div style="color:#6B5B4B">App Score</div><strong style="font-size:1.1rem">' + (trust.overall.appScore !== null ? trust.overall.appScore : '---') + '</strong></div>';
-  html += '<div style="text-align:center"><div style="color:#6B5B4B">Verification</div><strong style="font-size:1.1rem;color:' + (trust.verification.score !== null ? (trust.verification.score >= 70 ? '#7A8B6F' : trust.verification.score >= 40 ? '#D4AF37' : '#8B3A3A') : '#87A5B4') + '">' + (trust.verification.score !== null ? trust.verification.score + '%' : 'Not started') + '</strong></div>';
-  html += '<div style="text-align:center"><div style="color:#6B5B4B">Identity Risk</div><strong style="font-size:1.1rem;color:' + (trust.identity.risk === 0 ? '#7A8B6F' : trust.identity.risk <= 30 ? '#D4AF37' : '#8B3A3A') + '">' + (trust.identity.risk === 0 ? 'Clean' : trust.identity.risk + '%') + '</strong></div>';
-  html += '</div></div>';
-
-  // ---- IDENTITY RISK SECTION ----
-  if (trust.identity.duplicates.length > 0 || trust.identity.inconsistencies.length > 0) {
-    html += '<div style="background:rgba(139,58,58,.05);border:1px solid rgba(139,58,58,.15);padding:12px;border-radius:8px;margin-bottom:12px">';
-    html += '<strong style="color:#8B3A3A;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">Identity Flags</strong>';
-    if (trust.identity.duplicates.length > 0) {
-      html += '<div style="margin-top:8px">';
-      trust.identity.duplicates.forEach(d => {
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:4px 0;color:#3E3229">';
-        html += '<span>&#9888; <strong>' + esc(d.type) + ':</strong> ' + esc(d.name) + ' (' + esc(d.email) + ')' + (d.has_account ? ' <span style="color:#8B3A3A;font-weight:700">HAS ACCOUNT</span>' : '') + '</span>';
-        if (d.has_account && d.user_id) {
-          html += '<button class="btn btn-sm btn-danger" data-merge-secondary="' + d.user_id + '" style="font-size:.7rem;padding:2px 8px">Merge Into This User</button>';
-        }
-        html += '</div>';
-      });
-      html += '</div>';
-    }
-    if (trust.identity.inconsistencies.length > 0) {
-      trust.identity.inconsistencies.forEach(i => {
-        html += '<div style="font-size:.82rem;padding:4px 0;color:#8B3A3A">&#9888; ' + esc(i) + '</div>';
-      });
-    }
-    html += '</div>';
-  }
-
-  // ---- VERIFICATION CHECKLIST ----
-  // Get raw verification JSON for detail notes
-  const rawVerify = trust.verification || {};
-
-  html += '<div style="margin-bottom:12px"><strong style="font-size:.88rem">Verification Checklist</strong> <span style="font-size:.75rem;color:#6B5B4B">(' + trust.verification.checkedCount + '/' + trust.verification.items.length + ' checked)</span></div>';
-  trust.verification.items.forEach(item => {
-    const val = item.value;
-    const selectId = 'verify_' + item.key;
-    const detailId = 'verifyDetail_' + item.key;
-    const borderColor = val === 'fail' ? 'rgba(139,58,58,.3)' : val === 'concern' ? 'rgba(212,175,55,.3)' : val === 'pass' ? 'rgba(122,139,111,.3)' : '#e8e2d8';
-    html += '<div style="margin-bottom:8px;padding:8px 10px;background:#FDF9F3;border-radius:6px;border:1px solid ' + borderColor + '">';
-    html += '<div style="display:flex;align-items:center;gap:8px">';
-    html += '<select id="' + selectId + '" style="padding:4px 8px;border:1px solid #D4C5A9;border-radius:4px;font-size:.78rem;width:120px">';
-    html += '<option value="not_checked"' + (val === 'not_checked' ? ' selected' : '') + '>Not checked</option>';
-    html += '<option value="pass"' + (val === 'pass' ? ' selected' : '') + '>&#10003; Pass</option>';
-    html += '<option value="concern"' + (val === 'concern' ? ' selected' : '') + '>&#9888; Concern</option>';
-    html += '<option value="fail"' + (val === 'fail' ? ' selected' : '') + '>&#10005; Fail</option>';
-    html += '</select>';
-    html += '<span style="font-size:.85rem;flex:1">' + esc(item.label) + '</span>';
-    html += '<span style="font-size:.72rem;color:#6B5B4B">(' + item.weight + ' pts)</span>';
-    html += '</div>';
-    // Detail field - for recording specifics
-    const detailVal = item.detail || '';
-    html += '<input type="text" id="' + detailId + '" value="' + esc(detailVal) + '" placeholder="Details: vet name, phone, what was said..." style="width:100%;padding:4px 8px;border:1px solid #e8e2d8;border-radius:4px;font-size:.78rem;margin-top:6px;color:#3E3229">';
-    html += '</div>';
-  });
-  html += '<button class="btn btn-sm btn-info" id="saveVerifyBtn" style="margin-top:6px">Save Verification</button>';
-
-  // Role/Status
-  html += '<div class="form-grid" style="margin-top:16px">';
-  html += '<div class="field"><label>Role</label><select id="euRole"><option value="applicant"' + (user.role === 'applicant' ? ' selected' : '') + '>Applicant</option><option value="admin"' + (user.role === 'admin' ? ' selected' : '') + '>Admin</option></select></div>';
-  html += '<div class="field"><label>Status</label><select id="euStatus"><option value="active"' + (user.status === 'active' ? ' selected' : '') + '>Active</option><option value="suspended"' + (user.status === 'suspended' ? ' selected' : '') + '>Suspended</option><option value="inactive"' + (user.status === 'inactive' ? ' selected' : '') + '>Inactive</option></select></div>';
-  html += '</div>';
-
-  // Notes
-  html += '<div class="field" style="margin-top:12px"><label>Admin Notes</label><textarea id="euNotes" rows="4" style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.88rem" placeholder="Call notes, observations, follow-up reminders...">' + esc(user.admin_notes || '') + '</textarea></div>';
-
-  // ---- ACTIVITY TIMELINE ----
-  html += '<div style="margin-top:16px;border-top:1px solid #D4C5A9;padding-top:16px">';
-  html += '<strong style="font-size:.9rem">Activity Timeline</strong>';
-  // Quick-add bar
-  html += '<div style="display:flex;gap:8px;margin-top:10px;margin-bottom:12px">';
-  html += '<div style="display:flex;gap:8px;align-items:center">';
-  html += '<select id="activityType" style="padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px;font-size:.84rem">';
-  html += '<option value="call">&#9742; Call</option>';
-  html += '<option value="email">&#9993; Email</option>';
-  html += '<option value="note">&#9998; Note</option>';
-  html += '<option value="vet_check">&#9877; Vet Check</option>';
-  html += '<option value="video_visit">&#9654; Video Visit</option>';
-  html += '</select>';
-  html += '<button class="btn btn-sm btn-primary" id="addActivityBtn" style="white-space:nowrap">+ Add</button>';
-  html += '</div>';
-  html += '<textarea id="activityNote" rows="2" placeholder="What happened? e.g. Called, spoke 10 min about kitten care, discussed indoor setup..." style="width:100%;padding:8px 12px;border:1px solid #D4C5A9;border-radius:6px;font-size:.85rem;background:#fff;margin-top:6px;resize:vertical"></textarea>';
-  html += '</div>';
-  // Timeline entries
-  html += '<div id="activityTimeline" style="max-height:300px;overflow-y:auto">';
-  const typeIcons = { call: '&#9742;', email: '&#9993;', note: '&#9998;', vet_check: '&#9877;', video_visit: '&#9654;', verification: '&#10003;', system: '&#9881;' };
-  const typeColors = { call: '#4A90D9', email: '#D4AF37', note: '#7A8B6F', vet_check: '#A0522D', video_visit: '#6B5B4B', verification: '#7A8B6F', system: '#87A5B4' };
-  const typeLabels = { call: 'Call', email: 'Email', note: 'Note', vet_check: 'Vet Check', video_visit: 'Video Visit', verification: 'Verification', system: 'System' };
-  (activityData.entries || []).forEach(entry => {
-    const icon = typeIcons[entry.type] || '&#9679;';
-    const color = typeColors[entry.type] || '#6B5B4B';
-    const label = typeLabels[entry.type] || entry.type;
-    html += '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0ebe3">';
-    html += '<div style="min-width:32px;height:32px;background:' + color + ';color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.9rem">' + icon + '</div>';
-    html += '<div style="flex:1">';
-    html += '<div style="font-size:.84rem;font-weight:600;color:' + color + '">' + esc(label) + '</div>';
-    html += '<div style="font-size:.84rem;color:#3E3229;margin-top:2px">' + esc(entry.note || '') + '</div>';
-    html += '<div style="font-size:.72rem;color:#6B5B4B;margin-top:4px">' + timeAgo(entry.created_at) + (entry.created_by_email ? ' &mdash; ' + esc(entry.created_by_email) : '') + '</div>';
-    html += '</div></div>';
-  });
-  if (!activityData.entries || activityData.entries.length === 0) {
-    html += '<div style="font-size:.82rem;color:#6B5B4B;padding:12px 0;text-align:center">No activity logged yet</div>';
-  }
-  html += '</div></div>';
-
-  // ---- COMMUNICATION HISTORY ----
-  if (user.lead_id) {
-    const msgData = await api('/admin/leads/' + user.lead_id);
-    const messages = msgData.messages || [];
-    if (messages.length > 0) {
-      html += '<div style="margin-top:16px;border-top:1px solid #D4C5A9;padding-top:16px">';
-      html += '<strong style="font-size:.9rem">Message History</strong> <span style="font-size:.75rem;color:#6B5B4B">(' + messages.length + ')</span>';
-      html += '<div style="max-height:200px;overflow-y:auto;margin-top:10px">';
-      messages.forEach(msg => {
-        const isOut = msg.direction === 'outbound';
-        const bgColor = isOut ? 'rgba(122,139,111,.08)' : '#F5EDE0';
-        const dirLabel = isOut ? '<span style="color:#7A8B6F;font-weight:700;font-size:.72rem">SENT</span>' : '<span style="color:#87A5B4;font-weight:700;font-size:.72rem">RECEIVED</span>';
-        html += '<div style="background:' + bgColor + ';padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:.82rem">';
-        html += '<div style="display:flex;justify-content:space-between">' + dirLabel + ' <span style="font-size:.72rem;color:#6B5B4B">' + timeAgo(msg.created_at) + '</span></div>';
-        if (msg.subject) html += '<div style="font-weight:600;margin-top:2px">' + esc(msg.subject) + '</div>';
-        html += '<div style="margin-top:2px;color:#3E3229;white-space:pre-wrap;max-height:60px;overflow:hidden">' + esc((msg.body || '').slice(0, 200)) + '</div>';
-        html += '</div>';
-      });
-      html += '</div>';
-      html += '<button class="btn btn-sm btn-outline" style="margin-top:6px" onclick="this.closest(&#39;.modal-bg&#39;).remove();showLeadModal(' + user.lead_id + ')">Open Full Conversation</button>';
-      html += '</div>';
-    }
-  }
-
-  html += '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="saveUserBtn">Save</button></div>';
-
-  modal.innerHTML = html;
-  bg.appendChild(modal);
-  document.body.appendChild(bg);
-
-  // Add activity handler
-  document.getElementById('addActivityBtn').onclick = async () => {
-    const type = document.getElementById('activityType').value;
-    const note = document.getElementById('activityNote').value.trim();
-    if (!note) { document.getElementById('activityNote').focus(); return; }
-    const btn = document.getElementById('addActivityBtn');
-    btn.disabled = true; btn.textContent = '...';
-    await api('/admin/users/' + user.id + '/activity', { method: 'POST', body: JSON.stringify({ type, note }) });
-    bg.remove();
-    showUserEditModal(user);
-  };
-
-  // Save verification handler
-  // Merge button handlers
-  bg.querySelectorAll('[data-merge-secondary]').forEach(btn => {
-    btn.onclick = async () => {
-      const secondaryId = btn.getAttribute('data-merge-secondary');
-      if (!confirm('MERGE ACCOUNTS\\n\\nThis will absorb the duplicate account into THIS user (' + user.email + ').\\n\\nAll activity, applications, messages, and notes from the duplicate will be moved here. The duplicate account will be deleted.\\n\\nThis cannot be undone. Continue?')) return;
-      btn.disabled = true; btn.textContent = 'Merging...';
-      const res = await api('/admin/users/merge', { method: 'POST', body: JSON.stringify({ primary_id: user.id, secondary_id: parseInt(secondaryId) }) });
-      if (res.success) {
-        alert('Merge complete: ' + res.message + '\\n\\n' + (res.details || []).join(', '));
-        bg.remove();
-        renderApp();
-      } else {
-        alert('Merge failed: ' + (res.error || 'Unknown error'));
-        btn.disabled = false; btn.textContent = 'Merge Into This User';
-      }
-    };
-  });
-
-  document.getElementById('saveVerifyBtn').onclick = async () => {
-    const verification = {};
-    trust.verification.items.forEach(item => {
-      const sel = document.getElementById('verify_' + item.key);
-      if (sel) verification[item.key] = sel.value;
-      const detailEl = document.getElementById('verifyDetail_' + item.key);
-      if (detailEl && detailEl.value) verification[item.key + '_detail'] = detailEl.value;
-    });
-    const btn = document.getElementById('saveVerifyBtn');
-    btn.disabled = true; btn.textContent = 'Saving...';
-    try {
-      const res = await api('/admin/users/' + user.id + '/verify', { method: 'PUT', body: JSON.stringify({ verification }) });
-      if (res.success) {
-        btn.textContent = 'Saved!'; btn.style.background = '#7A8B6F';
-        setTimeout(() => { bg.remove(); showUserEditModal(user); }, 500);
-      } else {
-        alert('Save failed: ' + (res.error || 'Unknown error'));
-        btn.disabled = false; btn.textContent = 'Save Verification';
-      }
-    } catch(e) {
-      alert('Error saving: ' + e.message);
-      btn.disabled = false; btn.textContent = 'Save Verification';
-    }
-  };
-
-  document.getElementById('saveUserBtn').onclick = async () => {
-    const newRole = document.getElementById('euRole').value;
-    const res = await api('/admin/users/' + user.id, { method: 'PUT', body: JSON.stringify({
-      role: newRole,
-      status: document.getElementById('euStatus').value,
-      admin_notes: document.getElementById('euNotes').value
-    })});
-    if (res.needsVerification) {
-      alert(res.message);
-      return;
-    }
-    bg.remove();
-    renderApp();
-  };
 }
 
 // ---- Help ----
