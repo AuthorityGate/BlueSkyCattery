@@ -1677,7 +1677,7 @@ async function renderPortal() {
   const profile = profileRes.profile || {};
 
   let appContent = '';
-  if (existing) {
+  if (existing && existing.status !== 'draft') {
     const statusMap = { submitted: 'Your application is under review', reviewed: 'Your application has been reviewed', approved: 'Congratulations! Your application has been approved!', rejected: 'Unfortunately, your application was not approved at this time.' };
     appContent = \`<div class="card"><div class="status-card">
       <div style="font-size:2.5rem;margin-bottom:12px">\${existing.status === 'approved' ? '&#127881;' : existing.status === 'rejected' ? '&#128532;' : '&#128203;'}</div>
