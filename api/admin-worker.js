@@ -867,22 +867,27 @@ export default {
       if (path === '/api/admin/create-account' && method === 'POST') {
         const session = await requireAdmin();
         if (!session) return json({ error: 'Forbidden' }, 403);
-        const { lead_id, no_password } = await request.json();
-        const lead = await env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(lead_id).first();
-        if (!lead) return json({ error: 'Lead not found' }, 404);
-        if (!lead.email) return json({ error: 'Lead has no email address' }, 400);
-        const existingUser = await env.DB.prepare('SELECT id FROM users WHERE LOWER(email) = LOWER(?)').bind(lead.email).first();
-        if (existingUser) return json({ error: 'Account already exists for ' + lead.email }, 400);
+        try {
+          const { lead_id, no_password } = await request.json();
+          if (!lead_id) return json({ error: 'lead_id is required' }, 400);
+          const lead = await env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(lead_id).first();
+          if (!lead) return json({ error: 'Lead not found (id: ' + lead_id + ')' }, 404);
+          if (!lead.email) return json({ error: 'Lead "' + lead.name + '" has no email address. Add an email first.' }, 400);
+          const existingUser = await env.DB.prepare('SELECT id FROM users WHERE LOWER(email) = LOWER(?)').bind(lead.email).first();
+          if (existingUser) return json({ error: 'Account already exists for ' + lead.email }, 400);
 
-        const passwordHash = no_password ? 'NEEDS_RESET' : await hashPassword(generatePassword());
-        await env.DB.prepare(
-          'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', now(), now()).run();
+          const passwordHash = no_password ? 'NEEDS_RESET' : await hashPassword(generatePassword());
+          await env.DB.prepare(
+            'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', now(), now()).run();
 
-        await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
-        ctx.waitUntil(updateBrevoContact(lead.email, { LEAD_STATUS: 'approved' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]).catch(() => {}));
-        await writeAuditLog(env.DB, session.user_id, 'account_created_no_password', { lead_id, email: lead.email });
-        return json({ success: true, message: 'Account created for ' + lead.email + '. They must reset their password to log in.' });
+          await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
+          ctx.waitUntil(updateBrevoContact(lead.email, { LEAD_STATUS: 'approved' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]).catch(() => {}));
+          await writeAuditLog(env.DB, session.user_id, 'account_created_no_password', { lead_id, email: lead.email });
+          return json({ success: true, message: 'Account created for ' + lead.email + '. They must reset their password to log in.' });
+        } catch (e) {
+          return json({ error: 'Failed to create account: ' + e.message }, 500);
+        }
       }
 
       // =====================
