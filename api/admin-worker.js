@@ -785,7 +785,10 @@ export default {
         // Go-home date: admin-entered only
         const goHomeDate = kitten ? (kitten.go_home_date || null) : null;
 
-        return json({ lead, messages: messages.results, kitten, goHomeDate, user, application });
+        // Available kittens for assignment dropdown
+        const availableKittens = await env.DB.prepare("SELECT k.id, k.name, k.color, k.sex, k.status, l.litter_code FROM kittens k JOIN litters l ON k.litter_id = l.id WHERE k.status IN ('available','pending','reserved','sold') ORDER BY l.id DESC, k.number ASC").all();
+
+        return json({ lead, messages: messages.results, kitten, goHomeDate, user, application, availableKittens: availableKittens.results });
       }
 
       // Update lead (all fields)
@@ -3149,30 +3152,49 @@ async function showPersonModal(leadId, userId) {
   html += '<div style="margin-top:12px"><strong style="font-size:.88rem">Preferences</strong></div>';
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">';
   const sexPref = lead ? (lead.sex_preference || 'no_preference') : 'no_preference';
-  html += '<div class="field"><label>Sex</label><select id="pmSexPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (sexPref==='no_preference'?' selected':'') + '>No Preference</option><option value="male"' + (sexPref==='male'?' selected':'') + '>Male</option><option value="female"' + (sexPref==='female'?' selected':'') + '>Female</option></select></div>';
+  html += '<div class="field"><label>Sex</label><select id="pmSexPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference">No Preference</option><option value="male"' + (sexPref==='male'?' selected':'') + '>Male</option><option value="female"' + (sexPref==='female'?' selected':'') + '>Female</option></select></div>';
   const colorPref = lead ? (lead.color_preference || 'no_preference') : 'no_preference';
-  html += '<div class="field"><label>Color</label><select id="pmColorPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (colorPref==='no_preference'?' selected':'') + '>No Preference</option><option value="seal"' + (colorPref==='seal'?' selected':'') + '>Seal</option><option value="blue"' + (colorPref==='blue'?' selected':'') + '>Blue</option><option value="chocolate"' + (colorPref==='chocolate'?' selected':'') + '>Chocolate</option><option value="lavender"' + (colorPref==='lavender'?' selected':'') + '>Lavender</option><option value="cinnamon"' + (colorPref==='cinnamon'?' selected':'') + '>Cinnamon</option><option value="fawn"' + (colorPref==='fawn'?' selected':'') + '>Fawn</option><option value="red"' + (colorPref==='red'?' selected':'') + '>Red</option><option value="cream"' + (colorPref==='cream'?' selected':'') + '>Cream</option><option value="ebony"' + (colorPref==='ebony'?' selected':'') + '>Ebony</option><option value="white"' + (colorPref==='white'?' selected':'') + '>White</option></select></div>';
+  const colorOpts = ['no_preference:No Preference','seal:Seal','blue:Blue','chocolate:Chocolate','lavender:Lavender','cinnamon:Cinnamon','fawn:Fawn','red:Red','cream:Cream','ebony:Ebony','white:White','seal_point:Seal Point','blue_point:Blue Point','chocolate_point:Chocolate Point','lilac_point:Lilac Point','tabby:Tabby','tortie:Tortoiseshell','calico:Calico','bicolor:Bicolor','smoke:Smoke','silver:Silver','cameo:Cameo'];
+  html += '<div class="field"><label>Color</label><select id="pmColorPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px">';
+  colorOpts.forEach(function(o) { var p = o.split(':'); html += '<option value="' + p[0] + '"' + (colorPref===p[0]?' selected':'') + '>' + p[1] + '</option>'; });
+  html += '</select></div>';
   const tempPref = lead ? (lead.temperament_preference || 'no_preference') : 'no_preference';
-  html += '<div class="field"><label>Temperament</label><select id="pmTempPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (tempPref==='no_preference'?' selected':'') + '>No Preference</option><option value="playful_active"' + (tempPref==='playful_active'?' selected':'') + '>Playful/Active</option><option value="calm_gentle"' + (tempPref==='calm_gentle'?' selected':'') + '>Calm/Gentle</option><option value="social_outgoing"' + (tempPref==='social_outgoing'?' selected':'') + '>Social/Outgoing</option></select></div>';
+  const tempOpts = ['no_preference:No Preference','playful_active:Playful / Active','calm_gentle:Calm / Gentle','social_outgoing:Social / Outgoing','curious_adventurous:Curious / Adventurous','affectionate_cuddly:Affectionate / Cuddly','independent:Independent','vocal_chatty:Vocal / Chatty','lap_cat:Lap Cat','dog_friendly:Dog Friendly','child_friendly:Child Friendly','mellow:Mellow / Easy-Going'];
+  html += '<div class="field"><label>Temperament</label><select id="pmTempPref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px">';
+  tempOpts.forEach(function(o) { var p = o.split(':'); html += '<option value="' + p[0] + '"' + (tempPref===p[0]?' selected':'') + '>' + p[1] + '</option>'; });
+  html += '</select></div>';
   const eyePref = lead ? (lead.eye_color_preference || 'no_preference') : 'no_preference';
-  html += '<div class="field"><label>Eye Color</label><select id="pmEyePref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="no_preference"' + (eyePref==='no_preference'?' selected':'') + '>No Preference</option><option value="green"' + (eyePref==='green'?' selected':'') + '>Green</option><option value="blue"' + (eyePref==='blue'?' selected':'') + '>Blue</option></select></div>';
+  const eyeOpts = ['no_preference:No Preference','green:Green','blue:Blue','vivid_green:Vivid Green','emerald:Emerald','aqua:Aqua','gold:Gold','amber:Amber','copper:Copper','hazel:Hazel','odd_eyed:Odd-Eyed','sapphire:Sapphire'];
+  html += '<div class="field"><label>Eye Color</label><select id="pmEyePref" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px">';
+  eyeOpts.forEach(function(o) { var p = o.split(':'); html += '<option value="' + p[0] + '"' + (eyePref===p[0]?' selected':'') + '>' + p[1] + '</option>'; });
+  html += '</select></div>';
   html += '</div>';
 
-  // Kitten card (read-only if linked)
+  // ---- Kitten Assignment ----
+  html += '<div style="border-top:1px solid #D4C5A9;padding-top:12px;margin-top:12px">';
+  html += '<strong style="font-size:.88rem">Kitten Assignment</strong>';
+  const availableKittens = leadData.availableKittens || [];
+  const assignedId = kitten ? kitten.id : '';
+  html += '<div class="field" style="margin-top:8px"><label>Assigned Kitten</label><select id="pmKittenAssign" style="width:100%;padding:8px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="">-- None --</option>';
+  availableKittens.forEach(function(k) {
+    var label = k.name + ' (' + (k.litter_code || '') + ' - ' + (k.color || '') + ' ' + (k.sex || '') + ')';
+    var statusTag = k.status !== 'available' ? ' [' + k.status + ']' : '';
+    html += '<option value="' + k.id + '"' + (k.id == assignedId ? ' selected' : '') + '>' + esc(label + statusTag) + '</option>';
+  });
+  html += '</select></div>';
+
   if (kitten) {
-    html += '<div style="border:1px solid #D4C5A9;border-radius:8px;padding:12px;margin:12px 0;background:#FFFDF5">';
-    html += '<h3 style="font-size:.9rem;color:#A0522D;margin:0 0 8px">Kitten: ' + esc(kitten.name) + '</h3>';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.85rem">';
-    html += '<div><span style="color:#6B5B4B">Litter:</span> ' + esc(kitten.litter_code || '') + '</div>';
-    html += '<div><span style="color:#6B5B4B">Status:</span> ' + badge(kitten.status) + '</div>';
-    html += '<div><span style="color:#6B5B4B">Color:</span> ' + esc(kitten.color || 'TBD') + '</div>';
-    html += '<div><span style="color:#6B5B4B">Sex:</span> ' + esc(kitten.sex || 'TBD') + '</div>';
-    if (kitten.deposit_received_date) html += '<div><span style="color:#6B5B4B">Deposit:</span> $' + (kitten.deposit_amount || 0) + ' on ' + esc(kitten.deposit_received_date) + '</div>';
-    if (kitten.price) html += '<div><span style="color:#6B5B4B">Price:</span> $' + kitten.price + '</div>';
-    if (goHomeDate) html += '<div><span style="color:#6B5B4B">Go-Home:</span> <strong>' + esc(goHomeDate) + '</strong></div>';
-    if (kitten.breeding_rights) html += '<div><span style="font-size:.72rem;padding:2px 6px;border-radius:8px;background:#E2D9F3;color:#4A2D7A;font-weight:600">Breeding Rights</span></div>';
-    html += '</div></div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
+    html += '<div class="field"><label>Sold Date</label><input type="date" id="pmSoldDate" value="' + esc(kitten.sold_date || '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+    html += '<div class="field"><label>Go-Home Date</label><input type="date" id="pmGoHomeDate" value="' + esc(kitten.go_home_date || '') + '" style="width:100%;padding:6px 10px;border:1px solid #D4C5A9;border-radius:6px"></div>';
+    html += '</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+    if (kitten.deposit_received_date) html += '<div style="font-size:.85rem"><span style="color:#6B5B4B">Deposit:</span> $' + (kitten.deposit_amount || 0) + ' on ' + esc(kitten.deposit_received_date) + '</div>';
+    if (kitten.price) html += '<div style="font-size:.85rem"><span style="color:#6B5B4B">Price:</span> $' + kitten.price + '</div>';
+    html += '</div>';
+    html += '<div style="margin-top:6px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem"><input type="checkbox" id="pmBreedingRights"' + (kitten.breeding_rights ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:#A0522D"> Breeding Rights (skip spay/neuter email)</label></div>';
   }
+  html += '</div>';
 
   // ---- User Account Section (if user exists) ----
   if (userObj && trust) {
@@ -3386,6 +3408,21 @@ async function showPersonModal(leadId, userId) {
         temperament_preference: document.getElementById('pmTempPref').value,
         eye_color_preference: document.getElementById('pmEyePref').value
       })});
+      // Save kitten assignment
+      var kittenSelect = document.getElementById('pmKittenAssign');
+      if (kittenSelect) {
+        var newKittenId = kittenSelect.value;
+        var soldDateEl = document.getElementById('pmSoldDate');
+        var goHomeDateEl = document.getElementById('pmGoHomeDate');
+        var breedingEl = document.getElementById('pmBreedingRights');
+        if (newKittenId) {
+          var kittenData = { reserved_by: document.getElementById('pmEmail').value.trim(), reserved_lead_id: leadId };
+          if (soldDateEl) kittenData.sold_date = soldDateEl.value || null;
+          if (goHomeDateEl) kittenData.go_home_date = goHomeDateEl.value || null;
+          if (breedingEl) kittenData.breeding_rights = breedingEl.checked ? 1 : 0;
+          await api('/admin/kittens/' + newKittenId, { method: 'PUT', body: JSON.stringify(kittenData) });
+        }
+      }
     }
     // Save user fields
     if (userId && userObj) {
