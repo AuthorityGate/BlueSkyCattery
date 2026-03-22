@@ -848,8 +848,8 @@ export default {
         const passwordHash = await hashPassword(password);
 
         await env.DB.prepare(
-          'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', now(), now()).run();
+          'INSERT INTO users (lead_id, email, password_hash, role, status, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', 1, now(), now()).run();
 
         await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
 
@@ -882,8 +882,8 @@ export default {
 
           const passwordHash = no_password ? 'NEEDS_RESET' : await hashPassword(generatePassword());
           await env.DB.prepare(
-            'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', now(), now()).run();
+            'INSERT INTO users (lead_id, email, password_hash, role, status, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+          ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', 1, now(), now()).run();
 
           await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
           ctx.waitUntil(updateBrevoContact(lead.email, { LEAD_STATUS: 'approved' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]).catch(() => {}));
