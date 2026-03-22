@@ -1040,6 +1040,11 @@ export default {
           return json({ error: 'Invalid credentials' }, 401);
         }
 
+        // Block login for accounts that need password reset
+        if (user.password_hash === 'NEEDS_RESET') {
+          return json({ error: 'Your account requires a password to be set. Please use "Forgot Password" to create one.' }, 401);
+        }
+
         // Handle initial admin setup
         if (user.password_hash === 'ADMIN_INITIAL_SETUP') {
           const hash = await hashPassword(password);

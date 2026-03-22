@@ -606,6 +606,11 @@ export default {
           return json({ error: 'Access denied. Admin accounts only.' }, 403);
         }
 
+        // Block login for accounts that need password reset
+        if (user.password_hash === 'NEEDS_RESET') {
+          return json({ error: 'Your account requires a password to be set. Please use "Forgot Password" to create one.' }, 401);
+        }
+
         // Handle initial admin setup
         if (user.password_hash === 'ADMIN_INITIAL_SETUP') {
           const hash = await hashPassword(password);
@@ -777,7 +782,8 @@ export default {
         }
 
         // Get linked user account
-        const user = lead ? await env.DB.prepare('SELECT id, role, status, email_verified, created_at FROM users WHERE lead_id = ? OR LOWER(email) = LOWER(?)').bind(leadId, lead.email).first() : null;
+        let user = lead ? await env.DB.prepare('SELECT id, role, status, email_verified, password_hash, created_at FROM users WHERE lead_id = ? OR LOWER(email) = LOWER(?)').bind(leadId, lead.email).first() : null;
+        if (user) { user.needs_password_reset = user.password_hash === 'NEEDS_RESET'; delete user.password_hash; }
 
         // Get application
         const application = lead ? await env.DB.prepare('SELECT id, status, score, created_at FROM applications WHERE LOWER(email) = LOWER(?) ORDER BY created_at DESC LIMIT 1').bind(lead.email).first() : null;
@@ -855,6 +861,28 @@ export default {
         await writeAuditLog(env.DB, session.user_id, 'lead_approved', { lead_id, name: lead.name, email: lead.email });
 
         return json({ success: true, message: 'Account created and welcome email sent', tempPassword: password });
+      }
+
+      // Create account without password (admin tracking only, must reset to login)
+      if (path === '/api/admin/create-account' && method === 'POST') {
+        const session = await requireAdmin();
+        if (!session) return json({ error: 'Forbidden' }, 403);
+        const { lead_id, no_password } = await request.json();
+        const lead = await env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(lead_id).first();
+        if (!lead) return json({ error: 'Lead not found' }, 404);
+        if (!lead.email) return json({ error: 'Lead has no email address' }, 400);
+        const existingUser = await env.DB.prepare('SELECT id FROM users WHERE LOWER(email) = LOWER(?)').bind(lead.email).first();
+        if (existingUser) return json({ error: 'Account already exists for ' + lead.email }, 400);
+
+        const passwordHash = no_password ? 'NEEDS_RESET' : await hashPassword(generatePassword());
+        await env.DB.prepare(
+          'INSERT INTO users (lead_id, email, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(lead_id, lead.email, passwordHash, 'applicant', 'active', now(), now()).run();
+
+        await env.DB.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').bind('approved', now(), lead_id).run();
+        ctx.waitUntil(updateBrevoContact(lead.email, { LEAD_STATUS: 'approved' }, [BREVO_LISTS.approved], [BREVO_LISTS.leads]).catch(() => {}));
+        await writeAuditLog(env.DB, session.user_id, 'account_created_no_password', { lead_id, email: lead.email });
+        return json({ success: true, message: 'Account created for ' + lead.email + '. They must reset their password to log in.' });
       }
 
       // =====================
@@ -3059,6 +3087,7 @@ function showAddPersonModal() {
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">' +
     '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem"><input type="checkbox" id="apNewsletter" style="accent-color:#A0522D"> Newsletter</label>' +
     '<label style="display:flex;align-items:center;gap:6px;font-size:.85rem"><input type="checkbox" id="apWaitlist" style="accent-color:#A0522D"> Litter Waitlist</label></div>' +
+    '<div style="margin:12px 0;padding:12px;background:#F5EDE0;border-radius:6px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.9rem"><input type="checkbox" id="apCreateAccount" style="width:16px;height:16px;accent-color:#A0522D"> Create Portal Account (no password - must reset to login)</label><p style="font-size:.78rem;color:#6B5B4B;margin:4px 0 0 24px">Creates a tracking account. The person cannot log in until they reset their password via email.</p></div>' +
     '<div class="actions"><button class="btn btn-outline" onclick="this.closest(&#39;.modal-bg&#39;).remove()">Cancel</button><button class="btn btn-primary" id="apSaveBtn">Save</button></div>';
   bg.appendChild(modal);
   document.body.appendChild(bg);
@@ -3078,14 +3107,20 @@ function showAddPersonModal() {
       subscribed_newsletter: document.getElementById('apNewsletter').checked ? 1 : 0,
       subscribed_litter_waitlist: document.getElementById('apWaitlist').checked ? 1 : 0
     })});
-    if (res.success) { bg.remove(); renderApp(); }
+    if (res.success) {
+      // Create portal account if checked
+      if (document.getElementById('apCreateAccount').checked && document.getElementById('apEmail').value.trim()) {
+        await api('/admin/create-account', { method: 'POST', body: JSON.stringify({ lead_id: res.id, no_password: true }) });
+      }
+      bg.remove(); renderApp();
+    }
     else { alert(res.error || 'Failed'); btn.disabled = false; btn.textContent = 'Save'; }
   };
 }
 
 async function showPersonModal(leadId, userId) {
   // Fetch lead data if we have a leadId
-  let lead = null, messages = [], kitten = null, goHomeDate = null, linkedUser = null, application = null;
+  let lead = null, messages = [], kitten = null, goHomeDate = null, linkedUser = null, application = null, availKittens = [];
   if (leadId) {
     const data = await api('/admin/leads/' + leadId);
     lead = data.lead;
@@ -3094,6 +3129,7 @@ async function showPersonModal(leadId, userId) {
     goHomeDate = data.goHomeDate;
     linkedUser = data.user;
     application = data.application;
+    availKittens = data.availableKittens || [];
     if (!userId && linkedUser) userId = linkedUser.id;
   }
 
@@ -3173,7 +3209,7 @@ async function showPersonModal(leadId, userId) {
   // ---- Kitten Assignment ----
   html += '<div style="border-top:1px solid #D4C5A9;padding-top:12px;margin-top:12px">';
   html += '<strong style="font-size:.88rem">Kitten Assignment</strong>';
-  const availableKittens = leadData.availableKittens || [];
+  const availableKittens = availKittens;
   const assignedId = kitten ? kitten.id : '';
   html += '<div class="field" style="margin-top:8px"><label>Assigned Kitten</label><select id="pmKittenAssign" style="width:100%;padding:8px 10px;border:1px solid #D4C5A9;border-radius:6px"><option value="">-- None --</option>';
   availableKittens.forEach(function(k) {
@@ -3196,10 +3232,21 @@ async function showPersonModal(leadId, userId) {
   }
   html += '</div>';
 
-  // ---- User Account Section (if user exists) ----
-  if (userObj && trust) {
-    html += '<div style="border-top:1px solid #D4C5A9;padding-top:12px;margin-top:12px">';
+  // ---- User Account Section ----
+  html += '<div style="border-top:1px solid #D4C5A9;padding-top:12px;margin-top:12px">';
+  if (!userObj && leadId && lead && lead.email) {
+    html += '<div style="display:flex;justify-content:space-between;align-items:center">';
     html += '<strong style="font-size:.9rem">User Account</strong>';
+    html += '<button class="btn btn-sm btn-primary" id="pmCreateAccount">Create Account (no password)</button>';
+    html += '</div>';
+    html += '<p style="font-size:.78rem;color:#6B5B4B;margin:4px 0">No portal account. Create one for tracking — they must reset password via email to log in.</p>';
+    html += '</div>';
+  }
+  if (userObj && trust) {
+    html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+    html += '<strong style="font-size:.9rem">User Account</strong>';
+    if (userObj.needs_password_reset) html += '<span style="font-size:.72rem;padding:2px 8px;border-radius:10px;background:#FFF3CD;color:#856404;font-weight:600">Password Not Set</span>';
+    html += '</div>';
 
     // Role/Status
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
@@ -3389,6 +3436,17 @@ async function showPersonModal(leadId, userId) {
   }
 
   // Save button
+  // Create account button (for leads without accounts)
+  var createAcctBtn = document.getElementById('pmCreateAccount');
+  if (createAcctBtn) {
+    createAcctBtn.onclick = async () => {
+      createAcctBtn.disabled = true; createAcctBtn.textContent = 'Creating...';
+      var res = await api('/admin/create-account', { method: 'POST', body: JSON.stringify({ lead_id: leadId, no_password: true }) });
+      if (res.success) { alert(res.message); bg.remove(); showPersonModal(leadId); }
+      else { alert(res.error || 'Failed'); createAcctBtn.disabled = false; createAcctBtn.textContent = 'Create Account (no password)'; }
+    };
+  }
+
   document.getElementById('savePersonBtn').onclick = async () => {
     const btn = document.getElementById('savePersonBtn');
     btn.disabled = true; btn.textContent = 'Saving...';
